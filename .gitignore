@@ -1,0 +1,6 @@
+/dist/
+/claude-remote
+*.test
+*.out
+config.yaml
+.env

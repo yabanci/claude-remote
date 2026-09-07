@@ -1,0 +1,111 @@
+package config_test
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/yabanci/claude-remote/internal/config"
+)
+
+func TestValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(c *config.Config)
+		wantErr bool
+	}{
+		{"valid default", func(c *config.Config) {}, false},
+		{"no token", func(c *config.Config) { c.BotToken = "" }, true},
+		{"no allowed users is valid bootstrap state", func(c *config.Config) { c.AllowedUsers = nil }, false},
+		{"no sessions", func(c *config.Config) { c.Sessions = nil }, true},
+		{"default session missing", func(c *config.Config) { c.DefaultSession = "ghost" }, true},
+		{"session with empty dir", func(c *config.Config) {
+			c.Sessions["main"] = config.SessionConfig{Dir: "", Command: "claude"}
+		}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.BotToken = "test-token"
+			cfg.AllowedUsers = []int64{1}
+			tc.mutate(&cfg)
+
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestSaveLoadRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := config.Default()
+	cfg.BotToken = "abc123"
+	cfg.AllowedUsers = []int64{42}
+	cfg.Sessions["work"] = config.SessionConfig{Dir: "/tmp/work", Command: "claude"}
+
+	require.NoError(t, config.Save(path, cfg))
+
+	loaded, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, cfg.BotToken, loaded.BotToken)
+	assert.Equal(t, cfg.AllowedUsers, loaded.AllowedUsers)
+	assert.Equal(t, cfg.Sessions["work"], loaded.Sessions["work"])
+	assert.Equal(t, cfg.Settle, loaded.Settle)
+}
+
+func TestApplySettleDefaultsOnPartialConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, config.Save(path, config.Config{
+		BotToken:       "x",
+		DefaultSession: "main",
+		Sessions:       map[string]config.SessionConfig{"main": {Dir: "/tmp"}},
+	}))
+
+	loaded, err := config.Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, config.Default().Settle, loaded.Settle)
+}
+
+func TestIsAllowed(t *testing.T) {
+	cfg := config.Config{AllowedUsers: []int64{10, 20}}
+
+	assert.True(t, cfg.IsAllowed(10))
+	assert.False(t, cfg.IsAllowed(30))
+}
+
+func TestNeedsBootstrap(t *testing.T) {
+	assert.True(t, config.Config{}.NeedsBootstrap())
+	assert.False(t, config.Config{AllowedUsers: []int64{1}}.NeedsBootstrap())
+}
+
+func TestResolveTokenPrefersEnv(t *testing.T) {
+	t.Setenv(config.EnvBotToken, "from-env")
+	cfg := config.Config{BotToken: "from-file"}
+
+	assert.Equal(t, "from-env", cfg.ResolveToken())
+}
+
+func TestExpandDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got, err := config.ExpandDir("~/projects")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "projects"), got)
+
+	got, err = config.ExpandDir("/abs/path")
+	require.NoError(t, err)
+	assert.Equal(t, "/abs/path", got)
+}
