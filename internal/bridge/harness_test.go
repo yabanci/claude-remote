@@ -78,13 +78,24 @@ func (f *fakeRunner) Interrupt(session string) error {
 	return nil
 }
 
+const fakeScreenHeight = 24
+
 func (f *fakeRunner) CapturePane(session string, historyLines int) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.captureErr != nil {
 		return "", f.captureErr
 	}
-	return f.panes[session], nil
+	pane := f.panes[session]
+	if historyLines > 0 {
+		return pane, nil
+	}
+
+	lines := strings.Split(pane, "\n")
+	if len(lines) > fakeScreenHeight {
+		lines = lines[len(lines)-fakeScreenHeight:]
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 func (f *fakeRunner) lastSentKeys() string {
