@@ -19,11 +19,11 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
 
 ## Tasks
 
-- [ ] **Raise `cmd/claude-remote` coverage above 70%.** It sits at 51%, the lowest in the
-  repo. Untested: `printUsage`, the `version` and `help` branches of the command switch,
-  and the error path of `cmdService` when `os.Executable` succeeds but the subcommand is
-  unknown. Test the dispatch by extracting it into a function that takes args and returns
-  an error, so `main` stays a thin wrapper. Do not test by spawning the binary.
+- [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and
+  called `os.Exit` directly, so `printUsage`, the `version`/`help` branches, and the
+  unknown-subcommand path had no way to be exercised without spawning the binary.
+  Extracted `run(args, stdout, stderr) int` and `runBridge(ctx, args) error`; `main` is now
+  a thin wrapper around both. Coverage is 81.2%.
 
 - [ ] **Warn when the reply carries no known TUI marker.** `FormatReply` falls back to
   `CleanReply` when it finds no `⏺` block. That fallback is also what happens if a future
