@@ -27,6 +27,22 @@ Step 3 deliberately reads the visible pane rather than the full scrollback: any 
 necessarily changes the bottom of the screen, so the cheap read is sufficient to detect
 "still working", and the expensive one happens twice per reply instead of once per poll.
 
+### What a reply looks like
+
+A terminal screen is not a chat message, so the bridge does not forward one. It anchors on the
+prompt it just typed, takes everything after it, and reduces that to the answer:
+
+- assistant text only — tool invocations and their output are dropped
+- no TUI chrome: rulers, status bar, context and usage meters, spinners, the input line
+- no echo of your own message and no leftovers from the previous turn
+- if the session produced only tool activity, you get one line saying so rather than a log
+- if nothing matches the expected shape, the raw pane is cleaned and sent, so nothing is lost silently
+
+An interactive dialog is never typed into. Prose is held back with the dialog shown to you; a short
+answer (`1`, `2`, `yes`, `нет`) is passed through, so you can answer a menu deliberately. The
+first-run "do you trust this folder?" question is the one thing the bridge will not relay an answer
+for at all — confirm that in the terminal.
+
 That is screen scraping, deliberately. It means the bridge works with whatever the session prints, needs no API access, and leaves you a session you can attach to by hand at any time: `tmux attach -t main`.
 
 ## Install
