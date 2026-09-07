@@ -127,6 +127,9 @@ func cmdService(args []string) error {
 
 	switch args[0] {
 	case "install":
+		if err := verifyConfigBeforeInstall(args); err != nil {
+			return err
+		}
 		if err := mgr.Install(); err != nil {
 			return fmt.Errorf("install service: %w", err)
 		}
@@ -144,6 +147,22 @@ func cmdService(args []string) error {
 		fmt.Println(strings.TrimSpace(status))
 	default:
 		return fmt.Errorf("unknown service subcommand %q", args[0])
+	}
+	return nil
+}
+
+func verifyConfigBeforeInstall(args []string) error {
+	configPath, err := resolveConfigPath(args)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("refusing to install a service that cannot start: %w\n\nrun `claude-remote init` first", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("refusing to install a service that cannot start: config %s is invalid: %w", configPath, err)
 	}
 	return nil
 }
