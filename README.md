@@ -101,6 +101,7 @@ Anything that isn't a bridge command is typed straight into the session — incl
 | `/cr_kill [name]` | stop a session |
 | `/cr_restart [name]` | restart a session |
 | `/cr_interrupt` | send Ctrl-C to the current session |
+| `/cr_peek` | show the session screen without sending anything into it |
 | `/cr_send <path>` | send a file from the working directory back to you |
 | `/cr_help` | the same table, in chat |
 

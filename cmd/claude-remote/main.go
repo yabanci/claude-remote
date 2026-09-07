@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -22,36 +23,41 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		printUsage(stdout)
+		return 1
 	}
 
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "init":
-		err = cmdInit(os.Args[2:])
+		err = cmdInit(args[1:])
 	case "run":
-		err = cmdRun(os.Args[2:])
+		err = cmdRun(args[1:])
 	case "service":
-		err = cmdService(os.Args[2:])
+		err = cmdService(args[1:])
 	case "version":
-		fmt.Println(version)
+		_, _ = fmt.Fprintln(stdout, version)
 	case "help", "-h", "--help":
-		printUsage()
+		printUsage(stdout)
 	default:
-		printUsage()
-		os.Exit(1)
+		printUsage(stdout)
+		return 1
 	}
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintln(stderr, "error:", err)
+		return 1
 	}
+	return 0
 }
 
-func printUsage() {
-	fmt.Print(`claude-remote — control a running claude session over Telegram
+func printUsage(w io.Writer) {
+	_, _ = fmt.Fprint(w, `claude-remote — control a running claude session over Telegram
 
 Usage:
   claude-remote init              interactive setup wizard
@@ -73,6 +79,12 @@ func resolveConfigPath(args []string) (string, error) {
 }
 
 func cmdRun(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runBridge(ctx, args)
+}
+
+func runBridge(ctx context.Context, args []string) error {
 	configPath, err := resolveConfigPath(args)
 	if err != nil {
 		return err
@@ -102,9 +114,6 @@ func cmdRun(args []string) error {
 	tg := telegram.NewClient(cfg.ResolveToken(), clientOpts...)
 	runner := bridge.NewTmuxRunner()
 	br := bridge.New(cfg, configPath, tg, runner, logger, stateDir)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	logger.Info("claude-remote starting", "version", version, "config", configPath)
 	if err := br.Run(ctx); err != nil {

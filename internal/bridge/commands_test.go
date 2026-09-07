@@ -155,3 +155,23 @@ func TestCrSendResolvesPathRelativeToSessionDir(t *testing.T) {
 	assert.Equal(t, []string{"report.txt"}, h.tg.documents())
 	assert.Empty(t, h.tg.messages())
 }
+
+func TestCrKillRefusesSessionsTheBridgeDoesNotOwn(t *testing.T) {
+	h := newHarness(t)
+	require.NoError(t, h.runner.Start("personal-work", t.TempDir(), "vim"))
+
+	h.send("/cr_kill personal-work")
+
+	assert.Contains(t, h.lastMessage(), "не настроена")
+	assert.True(t, h.runner.Exists("personal-work"),
+		"a tmux session the user runs by hand must survive a stray kill command")
+}
+
+func TestCrKillStillStopsAConfiguredSession(t *testing.T) {
+	h := newHarness(t).startSession("main")
+
+	h.send("/cr_kill main")
+
+	assert.Contains(t, h.lastMessage(), "остановлена")
+	assert.False(t, h.runner.Exists("main"))
+}

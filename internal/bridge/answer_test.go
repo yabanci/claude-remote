@@ -8,6 +8,8 @@ import (
 	"github.com/yabanci/claude-remote/internal/bridge"
 )
 
+func firstOf(text string, _ bool) string { return text }
+
 const realPaneWithAnswer = `⏺ 391
 
 ✻ Crunched for 1s · done 12:58
@@ -38,13 +40,13 @@ const realPaneWithToolsAndAnswer = `⏺ Read(README.md)
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
 
 func TestFormatReplyReturnsOnlyTheAnswer(t *testing.T) {
-	got := bridge.FormatReply(realPaneWithAnswer)
+	got := firstOf(bridge.FormatReply(realPaneWithAnswer))
 
 	assert.Equal(t, "391", got, "a chat message is the answer, not a screen")
 }
 
 func TestFormatReplyDropsToolLogsButKeepsProse(t *testing.T) {
-	got := bridge.FormatReply(realPaneWithToolsAndAnswer)
+	got := firstOf(bridge.FormatReply(realPaneWithToolsAndAnswer))
 
 	assert.Equal(t, "Тесты проходят, README описывает сборку через make.\nНичего чинить не нужно.", got)
 	assert.NotContains(t, got, "Read(")
@@ -61,7 +63,7 @@ func TestExtractAnswerCountsToolBlocks(t *testing.T) {
 func TestFormatReplyReportsToolsWhenThereIsNoProse(t *testing.T) {
 	pane := "⏺ Bash(make build)\n  ⎿  built\n\n✻ done"
 
-	got := bridge.FormatReply(pane)
+	got := firstOf(bridge.FormatReply(pane))
 
 	assert.Contains(t, got, "выполнила 1 действий")
 }
@@ -69,7 +71,7 @@ func TestFormatReplyReportsToolsWhenThereIsNoProse(t *testing.T) {
 func TestFormatReplyFallsBackToCleanTextWithoutMarkers(t *testing.T) {
 	pane := "$ echo hi\nhi\n────────────\n  Context ░░░ 6% (58k/1.0M)"
 
-	got := bridge.FormatReply(pane)
+	got := firstOf(bridge.FormatReply(pane))
 
 	assert.Contains(t, got, "hi")
 	assert.NotContains(t, got, "Context ")
@@ -78,9 +80,28 @@ func TestFormatReplyFallsBackToCleanTextWithoutMarkers(t *testing.T) {
 func TestFormatReplyKeepsMultilineAnswerShape(t *testing.T) {
 	pane := "⏺ Нашёл три места:\n\n  1. первый\n  2. второй\n  3. третий\n\n✻ done"
 
-	got := bridge.FormatReply(pane)
+	got := firstOf(bridge.FormatReply(pane))
 
 	assert.Contains(t, got, "Нашёл три места:")
 	assert.Contains(t, got, "1. первый")
 	assert.Contains(t, got, "3. третий")
+}
+
+func TestFormatReplyFlagsFallbackOnLongText(t *testing.T) {
+	pane := "$ echo hi\nline one\nline two\nline three\nline four\nline five"
+
+	_, rawFallback := bridge.FormatReply(pane)
+
+	assert.True(t, rawFallback,
+		"a long reply with no known marker means the TUI changed and quality degraded silently")
+}
+
+func TestFormatReplyDoesNotFlagShortChromeOnlyFallback(t *testing.T) {
+	_, rawFallback := bridge.FormatReply("$ echo hi\nhi")
+
+	assert.False(t, rawFallback, "a two-line shell reply is normal, not a marker change")
+}
+
+func TestExpectedMarkersAreNamedForTheWarning(t *testing.T) {
+	assert.Contains(t, bridge.ExpectedMarkers(), "⏺")
 }

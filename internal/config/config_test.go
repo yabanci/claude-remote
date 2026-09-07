@@ -44,6 +44,34 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+func TestValidateReportsAllMissingSessionDirs(t *testing.T) {
+	cfg := config.Default()
+	cfg.BotToken = "test-token"
+	cfg.AllowedUsers = []int64{1}
+	cfg.Sessions["main"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	cfg.Sessions["ghost-one"] = config.SessionConfig{Dir: "/no/such/dir/one", Command: "claude"}
+	cfg.Sessions["ghost-two"] = config.SessionConfig{Dir: "/no/such/dir/two", Command: "claude"}
+
+	err := cfg.Validate()
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "ghost-one")
+	assert.ErrorContains(t, err, "ghost-two")
+}
+
+func TestValidateExpandsHomeBeforeCheckingSessionDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	require.NoError(t, os.MkdirAll(filepath.Join(home, "work"), 0o755))
+
+	cfg := config.Default()
+	cfg.BotToken = "test-token"
+	cfg.AllowedUsers = []int64{1}
+	cfg.Sessions["main"] = config.SessionConfig{Dir: "~/work", Command: "claude"}
+
+	assert.NoError(t, cfg.Validate())
+}
+
 func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
