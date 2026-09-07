@@ -43,7 +43,7 @@ func TestFormattedReplyForARealScrolledPane(t *testing.T) {
 
 	tail, ok := bridge.TailAfterPrompt(paneWithPreviousTurnStillOnScreen, sent)
 	require.True(t, ok)
-	got := bridge.FormatReply(tail, nil)
+	got := firstOf(bridge.FormatReply(tail))
 
 	assert.Equal(t, "claude-remote, docs, imc-rewrite, memory-service, mypaste, territory-run", got,
 		"a chat reply is the answer alone: no prior turn, no echo, no ghost input, no status bar")
@@ -77,7 +77,7 @@ func TestTailIsNotFooledByAnAnswerQuotingTheQuestion(t *testing.T) {
 	tail, ok := bridge.TailAfterPrompt(pane, "где лежит конфиг")
 
 	require.True(t, ok)
-	assert.Contains(t, bridge.FormatReply(tail, nil), "~/.config/claude-remote",
+	assert.Contains(t, firstOf(bridge.FormatReply(tail)), "~/.config/claude-remote",
 		"anchoring must use the input line, not a quote of the question inside the answer")
 }
 

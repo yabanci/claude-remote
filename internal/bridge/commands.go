@@ -21,6 +21,7 @@ func commandMenu() []telegram.BotCommand {
 		{Command: "cr_kill", Description: "остановить сессию: /cr_kill [имя]"},
 		{Command: "cr_restart", Description: "перезапустить сессию: /cr_restart [имя]"},
 		{Command: "cr_interrupt", Description: "Ctrl-C в текущей сессии"},
+		{Command: "cr_peek", Description: "показать экран сессии, ничего в неё не отправляя"},
 		{Command: "cr_send", Description: "прислать файл из рабочей директории: /cr_send <путь>"},
 		{Command: "cr_help", Description: "список команд"},
 	}
@@ -49,6 +50,8 @@ func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
 		b.cmdRestart(ctx, chatID, arg)
 	case "/cr_interrupt":
 		b.cmdInterrupt(ctx, chatID)
+	case "/cr_peek":
+		b.cmdPeek(ctx, chatID)
 	case "/cr_send":
 		b.cmdSend(ctx, chatID, arg)
 	case "/cr_help":
@@ -188,6 +191,26 @@ func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 		return
 	}
 	b.reply(ctx, chatID, "Ctrl-C отправлен")
+}
+
+func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
+	name := b.activeSessionName(chatID)
+	if !b.runner.Exists(name) {
+		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		return
+	}
+
+	pane, err := b.runner.CapturePane(name, captureHistoryLines)
+	if err != nil {
+		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+		return
+	}
+
+	shown, _ := FormatReply(pane)
+	if shown == "" {
+		shown = "(на экране пусто)"
+	}
+	b.reply(ctx, chatID, shown)
 }
 
 func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {

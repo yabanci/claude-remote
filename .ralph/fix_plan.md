@@ -32,12 +32,12 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   markers, when the fallback text is 4+ lines; the user-visible text is unchanged either
   way. Tested both the warn and no-warn paths.
 
-- [ ] **Add `/cr_peek`.** Returns the current pane of the active session, formatted the
+- [x] **Add `/cr_peek`.** Returns the current pane of the active session, formatted the
   same way as a reply, without typing anything into the session. Useful when a turn is
   still running or an answer was missed. Register it in `commandMenu` so it appears in
   Telegram's command list and in `/cr_help`. Test that it sends no keys.
 
-- [ ] **Report a session that died mid-turn.** If the tmux session disappears between
+- [x] **Report a session that died mid-turn.** If the tmux session disappears between
   sending the message and reading the answer, the user currently gets a capture error with
   a raw Go message. Detect that the session is gone and reply with something actionable
   naming the session and suggesting `/cr_restart`. Test with a runner whose session

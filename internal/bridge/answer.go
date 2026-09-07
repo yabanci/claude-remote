@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -66,19 +65,19 @@ func stripMarkerGutter(line string) string {
 	return strings.TrimPrefix(line, markerGutter)
 }
 
-func FormatReply(pane string, log *slog.Logger) string {
+func FormatReply(pane string) (string, bool) {
 	answer := ExtractAnswer(pane)
 	if answer.Text != "" {
-		return answer.Text
+		return answer.Text, false
 	}
 	if answer.ToolBlocks > 0 {
-		return fmt.Sprintf("сессия выполнила %d действий, но текстового ответа не дала", answer.ToolBlocks)
+		return fmt.Sprintf("сессия выполнила %d действий, но текстового ответа не дала", answer.ToolBlocks), false
 	}
 
 	cleaned := CleanReply(pane)
-	if log != nil && strings.Count(cleaned, "\n") >= fallbackWarnMinLines-1 {
-		log.Warn("reply had no known TUI marker, falling back to raw pane text",
-			"expected_markers", []string{answerMarker, toolResultMarker})
-	}
-	return cleaned
+	return cleaned, strings.Count(cleaned, "\n") >= fallbackWarnMinLines-1
+}
+
+func ExpectedMarkers() []string {
+	return []string{answerMarker, toolResultMarker, spinnerMarker}
 }

@@ -245,13 +245,13 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	defer stopTyping()
 
 	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, nil); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("ошибка чтения экрана: %v", err))
+		b.reportCaptureFailure(ctx, chatID, name, err)
 		return
 	}
 
 	after, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+		b.reportCaptureFailure(ctx, chatID, name, err)
 		return
 	}
 
@@ -267,11 +267,24 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	reply := FormatReply(produced, b.log)
+	reply, rawFallback := FormatReply(produced)
+	if rawFallback {
+		b.log.Warn("reply carried no known TUI marker, sent raw pane text instead",
+			"session", name, "expected_markers", ExpectedMarkers())
+	}
 	if reply == "" {
 		reply = "(сессия ничего не вывела — см. /cr_status)"
 	}
 	b.reply(ctx, chatID, reply)
+}
+
+func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name string, err error) {
+	if !b.runner.Exists(name) {
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"сессия %q пропала, пока готовился ответ — он потерян.\n\nПодними её: /cr_restart", name))
+		return
+	}
+	b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
 }
 
 func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram.Document) {

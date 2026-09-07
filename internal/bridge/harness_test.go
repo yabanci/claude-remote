@@ -237,6 +237,43 @@ type harness struct {
 	bridge     *bridge.Bridge
 }
 
+func testConfigFor(t *testing.T) config.Config {
+	t.Helper()
+	cfg := config.Default()
+	cfg.BotToken = "x"
+	cfg.AllowedUsers = []int64{testUserID}
+	cfg.Settle.PollIntervalMS = 5
+	cfg.Settle.StableRounds = 2
+	cfg.Settle.HardCapSeconds = 1
+	cfg.Settle.ColdStartDelayMS = 5
+	cfg.Settle.PostSendDelayMS = 5
+	cfg.Sessions["main"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	return cfg
+}
+
+func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner) *harness {
+	t.Helper()
+
+	ft := &fakeTelegram{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ft.handle(t, w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+
+	return &harness{
+		t:          t,
+		cfg:        cfg,
+		configPath: configPath,
+		runner:     newFakeRunner(),
+		tg:         ft,
+		bridge:     bridge.New(cfg, configPath, tg, runner, logger, t.TempDir()),
+	}
+}
+
 func newHarness(t *testing.T, tweaks ...func(*config.Config)) *harness {
 	t.Helper()
 
