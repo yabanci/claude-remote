@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yabanci/claude-remote/internal/config"
@@ -23,6 +24,8 @@ const (
 
 	replyDeliveryTimeout = 2 * time.Minute
 	dialogTailLines      = 20
+	typingRefresh        = 4 * time.Second
+	chatActionTyping     = "typing"
 )
 
 type Bridge struct {
@@ -33,6 +36,7 @@ type Bridge struct {
 	log        *slog.Logger
 	stateDir   string
 	offsets    *offsetStore
+	replyTo    int64
 
 	activeSession map[int64]string
 }
@@ -71,6 +75,10 @@ func (b *Bridge) Run(ctx context.Context) error {
 		for _, u := range updates {
 			offset = u.UpdateID + 1
 			b.offsets.save(offset)
+			if u.CallbackQuery != nil {
+				b.handleCallback(ctx, u.CallbackQuery)
+				continue
+			}
 			b.handleUpdate(ctx, u)
 		}
 	}
@@ -93,6 +101,7 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 	}
 
 	chatID := msg.Chat.ID
+	b.replyTo = msg.MessageID
 	switch {
 	case msg.Document != nil:
 		b.handleDocument(ctx, chatID, msg.Document)
@@ -101,6 +110,43 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 	case strings.TrimSpace(msg.Text) != "":
 		b.forwardToSession(ctx, chatID, msg.Text)
 	}
+	b.replyTo = 0
+}
+
+func (b *Bridge) handleCallback(ctx context.Context, q *telegram.CallbackQuery) {
+	if q.From == nil || q.Message == nil {
+		return
+	}
+	if !b.cfg.IsAllowed(q.From.ID) {
+		b.log.Warn("ignored callback from unauthorized sender", "from", q.From.ID)
+		return
+	}
+	if err := b.tg.AnswerCallback(ctx, q.ID, "отправил "+q.Data); err != nil {
+		b.log.Warn("answer callback failed", "err", err)
+	}
+	b.replyTo = q.Message.MessageID
+	b.forwardToSession(ctx, q.Message.Chat.ID, q.Data)
+	b.replyTo = 0
+}
+
+func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(typingRefresh)
+		defer ticker.Stop()
+		for {
+			if err := b.tg.SendChatAction(ctx, chatID, chatActionTyping); err != nil {
+				b.log.Debug("chat action failed", "err", err)
+			}
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
 }
 
 func (b *Bridge) bootstrapAllowedUser(ctx context.Context, userID, chatID int64) {
@@ -194,10 +240,10 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	}
 	time.Sleep(b.cfg.Settle.PostSendDelay())
 
-	onInterim := func(elapsed time.Duration) {
-		b.reply(ctx, chatID, fmt.Sprintf("ещё работает (%dс)…", int(elapsed.Seconds())))
-	}
-	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, onInterim); err != nil {
+	stopTyping := b.showTyping(ctx, chatID)
+	defer stopTyping()
+
+	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, nil); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("ошибка чтения экрана: %v", err))
 		return
 	}
@@ -208,10 +254,18 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
+	stopTyping()
+
 	produced, ok := TailAfterPrompt(after, text)
 	if !ok {
 		produced = DiffTail(before, after)
 	}
+
+	if menu, isMenu := ParseMenu(after); isMenu {
+		b.replyWithMenu(ctx, chatID, menu)
+		return
+	}
+
 	reply := FormatReply(produced)
 	if reply == "" {
 		reply = "(сессия ничего не вывела — см. /cr_status)"
@@ -268,11 +322,40 @@ func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
 		b.replyAsDocument(sendCtx, chatID, text)
 		return
 	}
-	for _, chunk := range SplitForTelegram(text, maxInlineReplyLen) {
-		if err := b.tg.SendMessage(sendCtx, chatID, chunk); err != nil {
+	for i, chunk := range SplitForTelegram(text, maxInlineReplyLen) {
+		opts := telegram.SendOptions{}
+		if i == 0 {
+			opts.ReplyTo = b.replyTo
+		}
+		if err := b.tg.Send(sendCtx, chatID, chunk, opts); err != nil {
 			b.log.Error("send message failed", "err", err)
 			return
 		}
+	}
+}
+
+func (b *Bridge) replyWithMenu(ctx context.Context, chatID int64, menu Menu) {
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
+	defer cancel()
+
+	var row []telegram.InlineButton
+	for _, option := range menu.Options {
+		row = append(row, telegram.InlineButton{
+			Text:         option.Key + ". " + option.Label,
+			CallbackData: option.Key,
+		})
+	}
+
+	text := menu.Question
+	if text == "" {
+		text = "сессия ждёт выбора"
+	}
+	opts := telegram.SendOptions{
+		ReplyTo:  b.replyTo,
+		Keyboard: &telegram.InlineKeyboard{Rows: [][]telegram.InlineButton{row}},
+	}
+	if err := b.tg.Send(sendCtx, chatID, text, opts); err != nil {
+		b.log.Error("send menu failed", "err", err)
 	}
 }
 

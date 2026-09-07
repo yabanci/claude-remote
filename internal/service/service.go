@@ -38,7 +38,10 @@ func NewManager(execPath string) *Manager {
 
 func NewManagerWithRunner(execPath string, runner CommandRunner) *Manager {
 	p, err := platformFor(runtime.GOOS)
-	return &Manager{execPath: execPath, runner: runner, platform: p, platErr: err}
+	if err != nil {
+		return &Manager{execPath: execPath, runner: runner, platErr: err}
+	}
+	return newManagerForPlatform(execPath, runner, p)
 }
 
 func newManagerForPlatform(execPath string, runner CommandRunner, p platform) *Manager {

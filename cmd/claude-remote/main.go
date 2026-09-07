@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/yabanci/claude-remote/internal/bridge"
 	"github.com/yabanci/claude-remote/internal/config"
@@ -91,7 +92,14 @@ func cmdRun(args []string) error {
 	}
 
 	stateDir := filepath.Join(filepath.Dir(configPath), "state")
-	tg := telegram.NewClient(cfg.ResolveToken())
+	var clientOpts []telegram.Option
+	if cfg.APIBase != "" {
+		clientOpts = append(clientOpts, telegram.WithBaseURL(cfg.APIBase))
+	}
+	if cfg.MaxRetries > 0 {
+		clientOpts = append(clientOpts, telegram.WithRetryPolicy(cfg.MaxRetries, time.Sleep))
+	}
+	tg := telegram.NewClient(cfg.ResolveToken(), clientOpts...)
 	runner := bridge.NewTmuxRunner()
 	br := bridge.New(cfg, configPath, tg, runner, logger, stateDir)
 

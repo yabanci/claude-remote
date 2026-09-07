@@ -154,15 +154,6 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) (
 	return updates, nil
 }
 
-func (c *Client) SendMessage(ctx context.Context, chatID int64, text string) error {
-	form := url.Values{
-		"chat_id": {strconv.FormatInt(chatID, 10)},
-		"text":    {text},
-	}
-	_, err := c.call(ctx, "sendMessage", form)
-	return err
-}
-
 func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error {
 	encoded, err := json.Marshal(commands)
 	if err != nil {

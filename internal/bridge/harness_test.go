@@ -109,11 +109,42 @@ func (f *fakeRunner) pane(session string) string {
 }
 
 type fakeTelegram struct {
-	mu       sync.Mutex
-	sent     []string
-	docs     []string
-	updates  []telegram.Update
-	nextCall int
+	mu         sync.Mutex
+	sent       []string
+	docs       []string
+	keyboardsL [][]string
+	callbacks  []string
+	typing     int
+	replyTos   []int64
+	updates    []telegram.Update
+	nextCall   int
+}
+
+func (f *fakeTelegram) keyboards() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.keyboardsL...)
+}
+
+func (f *fakeTelegram) answeredCallbacks() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.callbacks...)
+}
+
+func (f *fakeTelegram) typingActions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.typing
+}
+
+func (f *fakeTelegram) firstReplyTo() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.replyTos) == 0 {
+		return 0
+	}
+	return f.replyTos[0]
 }
 
 func (f *fakeTelegram) messages() []string {
@@ -151,10 +182,37 @@ func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Reque
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"file_id":"fid","file_path":"documents/upload.txt"}}`)
 	case strings.Contains(r.URL.Path, "/file/bot"):
 		_, _ = fmt.Fprint(w, "uploaded file body")
+	case strings.Contains(r.URL.Path, "sendChatAction"):
+		f.mu.Lock()
+		f.typing++
+		f.mu.Unlock()
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
+	case strings.Contains(r.URL.Path, "answerCallbackQuery"):
+		require.NoError(t, r.ParseForm())
+		f.mu.Lock()
+		f.callbacks = append(f.callbacks, r.FormValue("callback_query_id"))
+		f.mu.Unlock()
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 	case strings.Contains(r.URL.Path, "sendMessage"):
 		require.NoError(t, r.ParseForm())
 		f.mu.Lock()
 		f.sent = append(f.sent, r.FormValue("text"))
+		if raw := r.FormValue("reply_markup"); raw != "" {
+			var kb telegram.InlineKeyboard
+			require.NoError(t, json.Unmarshal([]byte(raw), &kb))
+			var labels []string
+			for _, row := range kb.Rows {
+				for _, btn := range row {
+					labels = append(labels, btn.Text)
+				}
+			}
+			f.keyboardsL = append(f.keyboardsL, labels)
+		}
+		if to := r.FormValue("reply_to_message_id"); to != "" {
+			var id int64
+			_, _ = fmt.Sscanf(to, "%d", &id)
+			f.replyTos = append(f.replyTos, id)
+		}
 		f.mu.Unlock()
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
 	case strings.Contains(r.URL.Path, "sendDocument"):
@@ -239,6 +297,23 @@ func (h *harness) deliver(msg telegram.Message) {
 	h.t.Helper()
 	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &msg}}
 	h.runUntilReply()
+}
+
+func (h *harness) deliverCallback(data string) {
+	h.t.Helper()
+	h.tg.updates = []telegram.Update{{
+		UpdateID: 1,
+		CallbackQuery: &telegram.CallbackQuery{
+			ID:   "cb-1",
+			From: &telegram.User{ID: testUserID},
+			Data: data,
+			Message: &telegram.Message{
+				MessageID: 77,
+				Chat:      telegram.Chat{ID: 1},
+			},
+		},
+	}}
+	h.runUntilReplies(1)
 }
 
 func (h *harness) runUntilReply() {
