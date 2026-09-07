@@ -48,7 +48,7 @@ answer (`1`, `2`, `yes`, `нет`) is passed through, so you can answer a menu d
 first-run "do you trust this folder?" question is the one thing the bridge will not relay an answer
 for at all — confirm that in the terminal.
 
-That is screen scraping, deliberately. It means the bridge works with whatever the session prints, needs no API access, and leaves you a session you can attach to by hand at any time: `tmux attach -t main`.
+That is screen scraping, deliberately. It means the bridge works with whatever the session prints, needs no API access, and leaves you a session you can attach to by hand at any time: `tmux attach -t cr-main`.
 
 ## Install
 
@@ -117,6 +117,8 @@ Config file (see paths above):
 bot_token: "123456:ABC-DEF..."      # or set CLAUDE_REMOTE_BOT_TOKEN
 allowed_users:
   - 123456789                       # empty = bind to first sender
+allowed_chats:
+  - 123456789                       # empty = any chat that user writes in
 default_session: main
 sessions:
   main:
@@ -149,7 +151,12 @@ Install from a shell where `tmux -V` and `claude --version` both work.
 Read this part.
 
 - **The bot token is a key to your machine.** Anyone who can message the bot as an allowed user can type anything into a session that has your shell, your files, and your credentials. Treat the token like an SSH private key.
-- The allowlist is by Telegram user id, checked on every message. Messages from anyone else are dropped and logged.
+- The allowlist is by Telegram user id *and* chat id, both checked on every message. Your own id alone is
+  not enough: writing from a group would otherwise publish the pane — sources, keys, log output — to
+  everyone in it. `init` pins both, and a config with no `allowed_chats` keeps the previous behaviour.
+- Sessions the bridge runs are named `cr-<name>` in tmux. It can neither read nor kill a session you
+  started yourself, even one named identically — the default session name is `main`, which is also the
+  most common name people use by hand.
 - `/cr_send` will send you any file the session could read. That is intentional — it's your machine — but it means a leaked token is a data-exfiltration path, not just a nuisance.
 - Everything runs locally over Telegram's HTTPS long-polling. No inbound ports, no tunnel, no third-party server beyond Telegram itself.
 - Telegram bot chats are not end-to-end encrypted. Telegram can see what passes through. Don't pipe secrets through the chat.

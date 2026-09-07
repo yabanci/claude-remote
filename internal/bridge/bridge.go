@@ -95,9 +95,18 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 		return
 	}
 	if b.cfg.NeedsBootstrap() {
-		b.bootstrapAllowedUser(ctx, msg.From.ID, msg.Chat.ID)
-	} else if !b.cfg.IsAllowed(msg.From.ID) {
+		if !b.bootstrapOwner(ctx, msg.From.ID, msg.Chat.ID) {
+			return
+		}
+		return
+	}
+	if !b.cfg.IsAllowed(msg.From.ID) {
 		b.log.Warn("ignored message from unauthorized sender", "from", msg.From.ID)
+		return
+	}
+	if !b.cfg.IsAllowedChat(msg.Chat.ID) {
+		b.log.Warn("ignored message from a chat that is not the owner's",
+			"chat", msg.Chat.ID, "from", msg.From.ID)
 		return
 	}
 
@@ -105,11 +114,17 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 	b.replyTo = msg.MessageID
 	switch {
 	case msg.Document != nil:
-		b.handleDocument(ctx, chatID, msg.Document)
+		b.handleUpload(ctx, chatID, msg.Document.FileID, msg.Document.FileName, msg.Caption)
+	case msg.LargestPhoto() != nil:
+		photo := msg.LargestPhoto()
+		b.handleUpload(ctx, chatID, photo.FileID, photoFileName(photo), msg.Caption)
 	case strings.HasPrefix(msg.Text, "/cr_"):
 		b.handleCommand(ctx, chatID, msg.Text)
 	case strings.TrimSpace(msg.Text) != "":
 		b.forwardToSession(ctx, chatID, msg.Text)
+	default:
+		b.log.Warn("message carried nothing the bridge understands", "chat", chatID)
+		b.reply(ctx, chatID, "не понял это сообщение: умею текст, файлы и фото")
 	}
 	b.replyTo = 0
 }
@@ -118,8 +133,9 @@ func (b *Bridge) handleCallback(ctx context.Context, q *telegram.CallbackQuery) 
 	if q.From == nil || q.Message == nil {
 		return
 	}
-	if !b.cfg.IsAllowed(q.From.ID) {
-		b.log.Warn("ignored callback from unauthorized sender", "from", q.From.ID)
+	if !b.cfg.IsAllowed(q.From.ID) || !b.cfg.IsAllowedChat(q.Message.Chat.ID) {
+		b.log.Warn("ignored callback from unauthorized sender or chat",
+			"from", q.From.ID, "chat", q.Message.Chat.ID)
 		return
 	}
 	if err := b.tg.AnswerCallback(ctx, q.ID, "отправил "+q.Data); err != nil {
@@ -150,13 +166,22 @@ func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
 	return func() { once.Do(func() { close(done) }) }
 }
 
-func (b *Bridge) bootstrapAllowedUser(ctx context.Context, userID, chatID int64) {
-	b.cfg.AllowedUsers = []int64{userID}
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.log.Error("bootstrap: save config failed", "err", err)
+func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) bool {
+	candidate := b.cfg
+	candidate.AllowedUsers = []int64{userID}
+	candidate.AllowedChats = []int64{chatID}
+
+	if err := config.Save(b.configPath, candidate); err != nil {
+		b.log.Error("bootstrap: save config failed, refusing to bind", "err", err)
+		b.reply(ctx, chatID, "не смог закрепить владельца в конфиге, поэтому ничего не выполняю. Проверь права на файл конфигурации и напиши снова.")
+		return false
 	}
-	b.log.Warn("bootstrapped allowed_users to first sender", "user_id", userID)
-	b.reply(ctx, chatID, fmt.Sprintf("привязан к пользователю %d — теперь только он может использовать бридж", userID))
+
+	b.cfg = candidate
+	b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
+	b.reply(ctx, chatID, fmt.Sprintf(
+		"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
+	return true
 }
 
 type sessionRef struct {
@@ -245,7 +270,7 @@ func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessi
 				"Это вопрос безопасности — ни я, ни бот на него за тебя не отвечаем. Подтверди в терминале:\n"+
 				"  tmux attach -t %s\n\n"+
 				"или один раз запусти claude в этом каталоге. После этого повтори сообщение.",
-			s.name, s.dir, s.name))
+			s.name, s.dir, TmuxSessionName(s.name)))
 		return true
 	}
 
@@ -322,29 +347,37 @@ func (b *Bridge) watchVisible(name string) CaptureFunc {
 	return func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
 }
 
-func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram.Document) {
+func (b *Bridge) handleUpload(ctx context.Context, chatID int64, fileID, fileName, caption string) {
 	s, err := b.resolveSession(chatID, "")
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
-	file, err := b.tg.GetFile(ctx, doc.FileID)
+	file, err := b.tg.GetFile(ctx, fileID)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось получить файл: %v", err))
 		return
 	}
 
-	safeName := sanitizeFileName(doc.FileName)
-	relPath := filepath.Join("telegram-inbox", safeName)
-	destPath := filepath.Join(s.dir, relPath)
-
-	if err := b.tg.DownloadFile(ctx, file.FilePath, destPath); err != nil {
+	relPath := filepath.Join("telegram-inbox", sanitizeFileName(fileName))
+	if err := b.tg.DownloadFile(ctx, file.FilePath, filepath.Join(s.dir, relPath)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось скачать файл: %v", err))
 		return
 	}
 
-	b.forwardToSession(ctx, chatID, fmt.Sprintf("[telegram] загружен файл: %s", relPath))
+	b.forwardToSession(ctx, chatID, uploadPrompt(relPath, caption))
+}
+
+func uploadPrompt(relPath, caption string) string {
+	if strings.TrimSpace(caption) == "" {
+		return fmt.Sprintf("[telegram] загружен файл: %s", relPath)
+	}
+	return fmt.Sprintf("[telegram] загружен файл: %s\n\n%s", relPath, caption)
+}
+
+func photoFileName(photo *telegram.PhotoSize) string {
+	return fmt.Sprintf("photo-%s.jpg", photo.FileID[:min(12, len(photo.FileID))])
 }
 
 func visibleTail(pane string, lines int) string {

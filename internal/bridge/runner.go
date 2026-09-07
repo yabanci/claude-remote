@@ -2,6 +2,12 @@ package bridge
 
 import "github.com/yabanci/claude-remote/internal/tmux"
 
+const sessionPrefix = "cr-"
+
+func TmuxSessionName(session string) string {
+	return sessionPrefix + session
+}
+
 type Runner interface {
 	Exists(session string) bool
 	Start(session, dir, command string) error
@@ -18,25 +24,25 @@ func NewTmuxRunner() Runner {
 }
 
 func (tmuxRunner) Exists(session string) bool {
-	return tmux.Exists(session)
+	return tmux.Exists(TmuxSessionName(session))
 }
 
 func (tmuxRunner) Start(session, dir, command string) error {
-	return tmux.Start(session, dir, command)
+	return tmux.Start(TmuxSessionName(session), dir, command)
 }
 
 func (tmuxRunner) Kill(session string) error {
-	return tmux.Kill(session)
+	return tmux.Kill(TmuxSessionName(session))
 }
 
 func (tmuxRunner) SendKeys(session, text string) error {
-	return tmux.SendKeys(session, text)
+	return tmux.SendKeys(TmuxSessionName(session), text)
 }
 
 func (tmuxRunner) Interrupt(session string) error {
-	return tmux.Interrupt(session)
+	return tmux.Interrupt(TmuxSessionName(session))
 }
 
 func (tmuxRunner) CapturePane(session string, historyLines int) (string, error) {
-	return tmux.CapturePane(session, historyLines)
+	return tmux.CapturePane(TmuxSessionName(session), historyLines)
 }
