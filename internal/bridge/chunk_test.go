@@ -63,3 +63,27 @@ func TestSplitForTelegramPreservesContentForMixedText(t *testing.T) {
 	}
 	assert.Equal(t, text, strings.Join(chunks, ""))
 }
+
+func TestSplitForTelegramCutLandingMidRuneBacksOff(t *testing.T) {
+	text := strings.Repeat("混", 2000)
+	const limit = 3500
+
+	require.NotZero(t, limit%3, "meaningful only when the limit does not divide the rune width")
+
+	chunks := bridge.SplitForTelegram(text, limit)
+
+	require.Greater(t, len(chunks), 1)
+	for i, c := range chunks {
+		assert.True(t, utf8.ValidString(c), "chunk %d was cut mid-rune: %q", i, c)
+	}
+	assert.Equal(t, text, strings.Join(chunks, ""))
+}
+
+func TestSplitForTelegramEmitsRuneWiderThanLimitWhole(t *testing.T) {
+	chunks := bridge.SplitForTelegram("混混混", 2)
+
+	for _, c := range chunks {
+		assert.True(t, utf8.ValidString(c), "a rune wider than the limit must not be split: %q", c)
+	}
+	assert.Equal(t, "混混混", strings.Join(chunks, ""))
+}

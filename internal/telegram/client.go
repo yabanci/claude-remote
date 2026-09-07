@@ -16,14 +16,18 @@ import (
 )
 
 const (
-	defaultAPIBase = "https://api.telegram.org"
-	requestTimeout = 90 * time.Second
+	defaultAPIBase    = "https://api.telegram.org"
+	requestTimeout    = 90 * time.Second
+	defaultMaxRetries = 3
+	maxRetryAfter     = 60 * time.Second
 )
 
 type Client struct {
 	token      string
 	apiBase    string
 	httpClient *http.Client
+	maxRetries int
+	sleep      func(time.Duration)
 }
 
 type Option func(*Client)
@@ -32,11 +36,20 @@ func WithBaseURL(baseURL string) Option {
 	return func(c *Client) { c.apiBase = baseURL }
 }
 
+func WithRetryPolicy(maxRetries int, sleep func(time.Duration)) Option {
+	return func(c *Client) {
+		c.maxRetries = maxRetries
+		c.sleep = sleep
+	}
+}
+
 func NewClient(token string, opts ...Option) *Client {
 	c := &Client{
 		token:      token,
 		apiBase:    defaultAPIBase,
 		httpClient: &http.Client{Timeout: requestTimeout},
+		maxRetries: defaultMaxRetries,
+		sleep:      time.Sleep,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -46,41 +59,79 @@ func NewClient(token string, opts ...Option) *Client {
 
 type apiResponse struct {
 	OK          bool            `json:"ok"`
+	ErrorCode   int             `json:"error_code"`
 	Description string          `json:"description"`
 	Result      json.RawMessage `json:"result"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
+}
+
+func (r apiResponse) retryAfter() time.Duration {
+	if r.ErrorCode != http.StatusTooManyRequests {
+		return 0
+	}
+	wait := time.Duration(r.Parameters.RetryAfter) * time.Second
+	if wait <= 0 {
+		wait = time.Second
+	}
+	if wait > maxRetryAfter {
+		wait = maxRetryAfter
+	}
+	return wait
 }
 
 func (c *Client) call(ctx context.Context, method string, form url.Values) (json.RawMessage, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		result, wait, err := c.callOnce(ctx, method, form)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+		if wait <= 0 || attempt >= c.maxRetries {
+			return nil, lastErr
+		}
+		c.sleep(wait)
+	}
+}
+
+func (c *Client) callOnce(ctx context.Context, method string, form url.Values) (json.RawMessage, time.Duration, error) {
 	endpoint := fmt.Sprintf("%s/bot%s/%s", c.apiBase, c.token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBufferString(form.Encode()))
 	if err != nil {
-		return nil, fmt.Errorf("build request for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("build request for %s: %w", method, err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	return c.do(req, method)
+	return c.doWithRetryHint(req, method)
 }
 
 func (c *Client) do(req *http.Request, method string) (json.RawMessage, error) {
+	result, _, err := c.doWithRetryHint(req, method)
+	return result, err
+}
+
+func (c *Client) doWithRetryHint(req *http.Request, method string) (json.RawMessage, time.Duration, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("call %s: %w", method, err)
+		return nil, 0, fmt.Errorf("call %s: %w", method, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response body for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("read response body for %s: %w", method, err)
 	}
 
 	var parsed apiResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("decode response for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("decode response for %s: %w", method, err)
 	}
 	if !parsed.OK {
-		return nil, fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
+		return nil, parsed.retryAfter(), fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
 	}
-	return parsed.Result, nil
+	return parsed.Result, 0, nil
 }
 
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeoutSec int) ([]Update, error) {
