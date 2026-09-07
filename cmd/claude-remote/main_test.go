@@ -127,3 +127,35 @@ func TestCmdServiceRejectsUnknownSubcommand(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown service subcommand")
 }
+
+func TestServiceInstallRefusesWithoutConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.yaml")
+
+	err := verifyConfigBeforeInstall([]string{"-config", missing})
+
+	require.Error(t, err, "installing a KeepAlive service with no config would crash-loop forever")
+	assert.Contains(t, err.Error(), "claude-remote init")
+}
+
+func TestServiceInstallRefusesWithInvalidConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = ""
+	require.NoError(t, config.Save(configPath, cfg))
+	t.Setenv(config.EnvBotToken, "")
+
+	err := verifyConfigBeforeInstall([]string{"-config", configPath})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid")
+}
+
+func TestServiceInstallAcceptsAWorkingConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = "123:abc"
+	cfg.AllowedUsers = []int64{1}
+	require.NoError(t, config.Save(configPath, cfg))
+
+	assert.NoError(t, verifyConfigBeforeInstall([]string{"-config", configPath}))
+}
