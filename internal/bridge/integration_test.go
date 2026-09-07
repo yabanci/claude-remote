@@ -21,7 +21,6 @@ import (
 	"github.com/yabanci/claude-remote/internal/bridge"
 	"github.com/yabanci/claude-remote/internal/config"
 	"github.com/yabanci/claude-remote/internal/telegram"
-	"github.com/yabanci/claude-remote/internal/tmux"
 )
 
 func TestEndToEndAgainstRealTmux(t *testing.T) {
@@ -31,8 +30,8 @@ func TestEndToEndAgainstRealTmux(t *testing.T) {
 
 	session := fmt.Sprintf("claude-remote-e2e-%d", time.Now().UnixNano())
 	t.Cleanup(func() {
-		if tmux.Exists(session) {
-			_ = tmux.Kill(session)
+		if liveExists(session) {
+			_ = liveKill(session)
 		}
 	})
 
