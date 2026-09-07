@@ -29,6 +29,7 @@ type Bridge struct {
 	runner     Runner
 	log        *slog.Logger
 	stateDir   string
+	offsets    *offsetStore
 
 	activeSession map[int64]string
 }
@@ -41,6 +42,7 @@ func New(cfg config.Config, configPath string, tg *telegram.Client, runner Runne
 		runner:        runner,
 		log:           log,
 		stateDir:      stateDir,
+		offsets:       newOffsetStore(stateDir, log),
 		activeSession: make(map[int64]string),
 	}
 }
@@ -50,7 +52,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 		b.log.Warn("set my commands failed", "err", err)
 	}
 
-	offset := b.loadOffset()
+	offset := b.offsets.load()
 
 	for ctx.Err() == nil {
 		updates, err := b.tg.GetUpdates(ctx, offset, getUpdatesTimeoutS)
@@ -65,7 +67,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 
 		for _, u := range updates {
 			offset = u.UpdateID + 1
-			b.saveOffset(offset)
+			b.offsets.save(offset)
 			b.handleUpdate(ctx, u)
 		}
 	}
@@ -107,6 +109,27 @@ func (b *Bridge) bootstrapAllowedUser(ctx context.Context, userID, chatID int64)
 	b.reply(ctx, chatID, fmt.Sprintf("привязан к пользователю %d — теперь только он может использовать бридж", userID))
 }
 
+type sessionRef struct {
+	name    string
+	dir     string
+	command string
+}
+
+func (b *Bridge) resolveSession(chatID int64, name string) (sessionRef, error) {
+	if name == "" {
+		name = b.activeSessionName(chatID)
+	}
+	sc, ok := b.cfg.Sessions[name]
+	if !ok {
+		return sessionRef{}, fmt.Errorf("сессия %q не настроена", name)
+	}
+	dir, err := config.ExpandDir(sc.Dir)
+	if err != nil {
+		return sessionRef{}, fmt.Errorf("не удалось развернуть путь %q: %w", sc.Dir, err)
+	}
+	return sessionRef{name: name, dir: dir, command: sc.Command}, nil
+}
+
 func (b *Bridge) activeSessionName(chatID int64) string {
 	if name, ok := b.activeSession[chatID]; ok {
 		if _, exists := b.cfg.Sessions[name]; exists {
@@ -117,21 +140,15 @@ func (b *Bridge) activeSessionName(chatID int64) string {
 }
 
 func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string) {
-	name := b.activeSessionName(chatID)
-	sc, ok := b.cfg.Sessions[name]
-	if !ok {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не настроена", name))
-		return
-	}
-
-	dir, err := config.ExpandDir(sc.Dir)
+	s, err := b.resolveSession(chatID, "")
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось развернуть путь %q: %v", sc.Dir, err))
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
+	name := s.name
 
 	if !b.runner.Exists(name) {
-		if err := b.runner.Start(name, dir, sc.Command); err != nil {
+		if err := b.runner.Start(name, s.dir, s.command); err != nil {
 			b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
 			return
 		}
@@ -173,15 +190,9 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 }
 
 func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram.Document) {
-	name := b.activeSessionName(chatID)
-	sc, ok := b.cfg.Sessions[name]
-	if !ok {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не настроена", name))
-		return
-	}
-	dir, err := config.ExpandDir(sc.Dir)
+	s, err := b.resolveSession(chatID, "")
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось развернуть путь %q: %v", sc.Dir, err))
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
@@ -193,7 +204,7 @@ func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram
 
 	safeName := sanitizeFileName(doc.FileName)
 	relPath := filepath.Join("telegram-inbox", safeName)
-	destPath := filepath.Join(dir, relPath)
+	destPath := filepath.Join(s.dir, relPath)
 
 	if err := b.tg.DownloadFile(ctx, file.FilePath, destPath); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось скачать файл: %v", err))
@@ -234,31 +245,5 @@ func (b *Bridge) replyAsDocument(ctx context.Context, chatID int64, text string)
 
 	if err := b.tg.SendDocument(ctx, chatID, path); err != nil {
 		b.log.Error("send long reply as document failed", "err", err)
-	}
-}
-
-func (b *Bridge) offsetPath() string {
-	return filepath.Join(b.stateDir, "offset.txt")
-}
-
-func (b *Bridge) loadOffset() int64 {
-	data, err := os.ReadFile(b.offsetPath())
-	if err != nil {
-		return 0
-	}
-	offset, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return offset
-}
-
-func (b *Bridge) saveOffset(offset int64) {
-	if err := os.MkdirAll(b.stateDir, 0o700); err != nil {
-		b.log.Error("create state dir failed", "err", err)
-		return
-	}
-	if err := os.WriteFile(b.offsetPath(), []byte(strconv.FormatInt(offset, 10)), 0o600); err != nil {
-		b.log.Error("save offset failed", "err", err)
 	}
 }

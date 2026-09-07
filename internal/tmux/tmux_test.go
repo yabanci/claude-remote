@@ -31,6 +31,16 @@ func uniqueSession(t *testing.T) string {
 	return name
 }
 
+func waitForPane(t *testing.T, session, want string) {
+	t.Helper()
+	var pane string
+	require.Eventually(t, func() bool {
+		var err error
+		pane, err = tmux.CapturePane(session, 100)
+		return err == nil && strings.Contains(pane, want)
+	}, 10*time.Second, 200*time.Millisecond, "expected %q in pane, got:\n%s", want, pane)
+}
+
 func TestSessionLifecycle(t *testing.T) {
 	requireTmux(t)
 	session := uniqueSession(t)
@@ -44,6 +54,15 @@ func TestSessionLifecycle(t *testing.T) {
 	assert.False(t, tmux.Exists(session))
 }
 
+func TestStartRunsTheGivenCommand(t *testing.T) {
+	requireTmux(t)
+	session := uniqueSession(t)
+
+	require.NoError(t, tmux.Start(session, t.TempDir(), "echo started-with-command"))
+
+	waitForPane(t, session, "started-with-command")
+}
+
 func TestSendKeysAppearsInCapturedPane(t *testing.T) {
 	requireTmux(t)
 	session := uniqueSession(t)
@@ -51,12 +70,7 @@ func TestSendKeysAppearsInCapturedPane(t *testing.T) {
 
 	require.NoError(t, tmux.SendKeys(session, "echo hello-from-bridge"))
 
-	var pane string
-	require.Eventually(t, func() bool {
-		var err error
-		pane, err = tmux.CapturePane(session, 100)
-		return err == nil && strings.Contains(pane, "hello-from-bridge")
-	}, 10*time.Second, 200*time.Millisecond, "expected echoed output in pane, got:\n%s", pane)
+	waitForPane(t, session, "hello-from-bridge")
 }
 
 func TestSendKeysIsLiteralNotInterpreted(t *testing.T) {
@@ -66,21 +80,49 @@ func TestSendKeysIsLiteralNotInterpreted(t *testing.T) {
 
 	require.NoError(t, tmux.SendKeys(session, "echo 'C-c ; literal $TEST'"))
 
-	var pane string
-	require.Eventually(t, func() bool {
-		var err error
-		pane, err = tmux.CapturePane(session, 100)
-		return err == nil && strings.Contains(pane, "C-c ; literal $TEST")
-	}, 10*time.Second, 200*time.Millisecond, "expected literal text in pane, got:\n%s", pane)
+	waitForPane(t, session, "C-c ; literal $TEST")
 }
 
-func TestListSessionsIncludesStartedSession(t *testing.T) {
+func TestInterruptReachesThePane(t *testing.T) {
 	requireTmux(t)
 	session := uniqueSession(t)
 	require.NoError(t, tmux.Start(session, t.TempDir(), ""))
+	require.NoError(t, tmux.SendKeys(session, "sleep 30"))
 
-	sessions, err := tmux.ListSessions()
+	require.NoError(t, tmux.Interrupt(session))
+
+	waitForPane(t, session, "^C")
+}
+
+func TestCaptureVisibleOnlyStillReturnsContent(t *testing.T) {
+	requireTmux(t)
+	session := uniqueSession(t)
+	require.NoError(t, tmux.Start(session, t.TempDir(), ""))
+	require.NoError(t, tmux.SendKeys(session, "echo visible-pane-marker"))
+	waitForPane(t, session, "visible-pane-marker")
+
+	visible, err := tmux.CapturePane(session, 0)
 
 	require.NoError(t, err)
-	assert.Contains(t, sessions, session)
+	assert.Contains(t, visible, "visible-pane-marker")
+}
+
+func TestOperationsOnMissingSessionReturnErrors(t *testing.T) {
+	requireTmux(t)
+	absent := fmt.Sprintf("cr-absent-%d", time.Now().UnixNano())
+
+	assert.False(t, tmux.Exists(absent))
+	assert.Error(t, tmux.Kill(absent))
+	assert.Error(t, tmux.SendKeys(absent, "hello"))
+	assert.Error(t, tmux.Interrupt(absent))
+
+	_, err := tmux.CapturePane(absent, 100)
+	assert.Error(t, err)
+}
+
+func TestStartFailsOnMissingDirectory(t *testing.T) {
+	requireTmux(t)
+	session := uniqueSession(t)
+
+	assert.Error(t, tmux.Start(session, "/definitely/not/a/directory", ""))
 }

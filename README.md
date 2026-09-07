@@ -148,9 +148,17 @@ The heavy processes on your machine are `claude` and `tmux`, not this bridge.
 
 ```bash
 go build ./...
-go test ./... -race
+go test ./... -race -cover
 golangci-lint run ./...
+go test ./internal/tmux -bench BenchmarkCapturePane -benchmem
 ```
+
+Coverage: `tmux` 90%, `service` 86%, `bridge` 78%, `config` 75%, `telegram` 73%, `cmd` 52%.
+
+Anything that shells out sits behind an interface declared at the call site (`bridge.Runner`,
+`service.CommandRunner`, `service.platform`), so the whole suite runs without a tmux session,
+without touching `launchctl`/`systemctl`, and exercises the launchd *and* systemd paths on
+either OS. The tests that do drive real `tmux` skip themselves when it isn't installed.
 
 ## License
 
