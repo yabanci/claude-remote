@@ -1,8 +1,8 @@
 package tmux
 
 import (
-	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 )
@@ -13,6 +13,14 @@ func Exists(session string) bool {
 }
 
 func Start(session, dir, command string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("working dir %s for session %s: %w", dir, session, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("working dir %s for session %s is not a directory", dir, session)
+	}
+
 	if err := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", dir).Run(); err != nil {
 		return fmt.Errorf("create tmux session %s: %w", session, err)
 	}
@@ -47,35 +55,13 @@ func Interrupt(session string) error {
 }
 
 func CapturePane(session string, historyLines int) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", session, "-S", "-"+strconv.Itoa(historyLines)).Output()
+	args := []string{"capture-pane", "-p", "-t", session}
+	if historyLines > 0 {
+		args = append(args, "-S", "-"+strconv.Itoa(historyLines))
+	}
+	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("capture pane %s: %w", session, err)
 	}
 	return string(out), nil
-}
-
-func ListSessions() ([]string, error) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("list tmux sessions: %w", err)
-	}
-	return splitNonEmptyLines(string(out)), nil
-}
-
-func splitNonEmptyLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == '\n' {
-			if i > start {
-				lines = append(lines, s[start:i])
-			}
-			start = i + 1
-		}
-	}
-	return lines
 }

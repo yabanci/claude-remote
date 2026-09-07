@@ -12,9 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
-const defaultAPIBase = "https://api.telegram.org"
+const (
+	defaultAPIBase = "https://api.telegram.org"
+	requestTimeout = 90 * time.Second
+)
 
 type Client struct {
 	token      string
@@ -32,7 +36,7 @@ func NewClient(token string, opts ...Option) *Client {
 	c := &Client{
 		token:      token,
 		apiBase:    defaultAPIBase,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: requestTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)

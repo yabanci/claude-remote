@@ -156,30 +156,22 @@ func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
 }
 
 func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
-	if name == "" {
-		name = b.activeSessionName(chatID)
-	}
-	sc, ok := b.cfg.Sessions[name]
-	if !ok {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не настроена", name))
+	s, err := b.resolveSession(chatID, name)
+	if err != nil {
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
-	if b.runner.Exists(name) {
-		if err := b.runner.Kill(name); err != nil {
+	if b.runner.Exists(s.name) {
+		if err := b.runner.Kill(s.name); err != nil {
 			b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
 			return
 		}
 	}
-	dir, err := config.ExpandDir(sc.Dir)
-	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось развернуть путь: %v", err))
-		return
-	}
-	if err := b.runner.Start(name, dir, sc.Command); err != nil {
+	if err := b.runner.Start(s.name, s.dir, s.command); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить: %v", err))
 		return
 	}
-	b.reply(ctx, chatID, fmt.Sprintf("перезапущена: %s", name))
+	b.reply(ctx, chatID, fmt.Sprintf("перезапущена: %s", s.name))
 }
 
 func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
@@ -200,21 +192,15 @@ func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {
 		b.reply(ctx, chatID, "формат: /cr_send <путь>")
 		return
 	}
-	name := b.activeSessionName(chatID)
-	sc, ok := b.cfg.Sessions[name]
-	if !ok {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не настроена", name))
-		return
-	}
-	dir, err := config.ExpandDir(sc.Dir)
+	s, err := b.resolveSession(chatID, "")
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось развернуть путь: %v", err))
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
 	path := arg
 	if !filepath.IsAbs(path) {
-		path = filepath.Join(dir, path)
+		path = filepath.Join(s.dir, path)
 	}
 	if _, err := os.Stat(path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("файл не найден: %s", path))

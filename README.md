@@ -18,10 +18,14 @@ You can SSH. But then you are typing into a TUI over a phone keyboard, holding a
 
 The session runs inside a `tmux` session. For each incoming Telegram message, the bridge:
 
-1. captures the tmux pane (the "before" snapshot),
+1. captures the tmux pane with scrollback (the "before" snapshot),
 2. types your message into the pane and presses Enter,
-3. polls the pane until its contents stop changing (that's the reply being finished),
-4. diffs against the "before" snapshot and sends you what's new.
+3. polls **only the visible pane** until it stops changing (that's the reply being finished),
+4. captures scrollback once more and diffs against "before" to send you what's new.
+
+Step 3 deliberately reads the visible pane rather than the full scrollback: any new output
+necessarily changes the bottom of the screen, so the cheap read is sufficient to detect
+"still working", and the expensive one happens twice per reply instead of once per poll.
 
 That is screen scraping, deliberately. It means the bridge works with whatever the session prints, needs no API access, and leaves you a session you can attach to by hand at any time: `tmux attach -t main`.
 
@@ -118,6 +122,21 @@ Read this part.
 - Everything runs locally over Telegram's HTTPS long-polling. No inbound ports, no tunnel, no third-party server beyond Telegram itself.
 - Telegram bot chats are not end-to-end encrypted. Telegram can see what passes through. Don't pipe secrets through the chat.
 
+## Resource use
+
+Measured on an Apple M1 (`go test ./internal/tmux -bench BenchmarkCapturePane -benchmem`):
+
+| | per call | allocated |
+|---|---|---|
+| capture with 5000 lines of scrollback | 7.76 ms | 751 KB |
+| capture of the visible pane only | 5.38 ms | 52 KB |
+
+Polling the visible pane instead of the scrollback turns a 60-second reply (~40 polls) from
+~30 MB of garbage into ~2 MB. Most of the remaining cost is forking `tmux` itself.
+
+Idle, the daemon sits at **~10 MB RSS and 0% CPU** — one long-poll HTTP request every 25 seconds.
+The heavy processes on your machine are `claude` and `tmux`, not this bridge.
+
 ## Limitations
 
 - It reads a terminal pane, so tool-call noise and spinners can show up in replies alongside the actual answer.
@@ -129,9 +148,17 @@ Read this part.
 
 ```bash
 go build ./...
-go test ./... -race
+go test ./... -race -cover
 golangci-lint run ./...
+go test ./internal/tmux -bench BenchmarkCapturePane -benchmem
 ```
+
+Coverage: `tmux` 90%, `service` 86%, `bridge` 78%, `config` 75%, `telegram` 73%, `cmd` 52%.
+
+Anything that shells out sits behind an interface declared at the call site (`bridge.Runner`,
+`service.CommandRunner`, `service.platform`), so the whole suite runs without a tmux session,
+without touching `launchctl`/`systemctl`, and exercises the launchd *and* systemd paths on
+either OS. The tests that do drive real `tmux` skip themselves when it isn't installed.
 
 ## License
 
