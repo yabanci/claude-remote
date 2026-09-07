@@ -1,0 +1,54 @@
+# claude-remote — hardening backlog
+
+Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and a live
+`claude` session running in tmux.
+
+## Ground rules for every task
+
+- No comments in code. Only `TODO:` / `FIXME:` / `HACK:` markers are allowed.
+- Every change ships with tests that would fail without it.
+- Interfaces are declared at the call site (`bridge.Runner`, `service.CommandRunner`,
+  `service.platform`). Anything that shells out goes behind one — a test must never touch
+  the real system.
+- Before marking a task done, all of these must pass:
+  `gofmt -l .` (empty), `go vet ./...`, `golangci-lint run ./...`,
+  `go test ./... -race`, and `deadcode ./...` must report nothing.
+- Commit each finished task separately with a message that says what broke and why, not
+  what the diff shows.
+- Never touch `.github/workflows`, `go.mod`, or the release configuration.
+
+## Tasks
+
+- [ ] **Raise `cmd/claude-remote` coverage above 70%.** It sits at 51%, the lowest in the
+  repo. Untested: `printUsage`, the `version` and `help` branches of the command switch,
+  and the error path of `cmdService` when `os.Executable` succeeds but the subcommand is
+  unknown. Test the dispatch by extracting it into a function that takes args and returns
+  an error, so `main` stays a thin wrapper. Do not test by spawning the binary.
+
+- [ ] **Warn when the reply carries no known TUI marker.** `FormatReply` falls back to
+  `CleanReply` when it finds no `⏺` block. That fallback is also what happens if a future
+  Claude Code release changes its markers — the bridge would quietly start relaying screen
+  scrapings again. Add a detector: when the fallback is used *and* the text is longer than
+  a few lines, log a warning naming the markers that were expected. Do not change what the
+  user receives. Test both branches.
+
+- [ ] **Add `/cr_peek`.** Returns the current pane of the active session, formatted the
+  same way as a reply, without typing anything into the session. Useful when a turn is
+  still running or an answer was missed. Register it in `commandMenu` so it appears in
+  Telegram's command list and in `/cr_help`. Test that it sends no keys.
+
+- [ ] **Report a session that died mid-turn.** If the tmux session disappears between
+  sending the message and reading the answer, the user currently gets a capture error with
+  a raw Go message. Detect that the session is gone and reply with something actionable
+  naming the session and suggesting `/cr_restart`. Test with a runner whose session
+  vanishes after `SendKeys`.
+
+- [ ] **Validate session directories when the config loads.** `Config.Validate` checks that
+  `dir` is non-empty but not that it exists, so a typo is only discovered when a message
+  arrives and `tmux.Start` fails. Make `Validate` report every session whose directory is
+  missing, in one error listing all of them rather than failing on the first. Keep
+  `~` expansion working. Test with two bad directories and assert both are named.
+
+- [x] **Make `/cr_kill` refuse to kill a session that is not configured.** Done before the
+  loop started: it killed any tmux session by name, including one the user runs by hand.
+  Restricted to configured sessions, with tests.

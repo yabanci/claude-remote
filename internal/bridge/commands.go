@@ -141,9 +141,12 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 }
 
 func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
-	if name == "" {
-		name = b.activeSessionName(chatID)
+	s, err := b.resolveSession(chatID, name)
+	if err != nil {
+		b.reply(ctx, chatID, err.Error())
+		return
 	}
+	name = s.name
 	if !b.runner.Exists(name) {
 		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
 		return
