@@ -62,7 +62,8 @@ func splitRuneSafe(s string, limit int) []string {
 			cut--
 		}
 		if cut == 0 {
-			cut = limit
+			_, size := utf8.DecodeRuneInString(s)
+			cut = size
 		}
 		pieces = append(pieces, s[:cut])
 		s = s[cut:]

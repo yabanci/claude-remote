@@ -60,7 +60,7 @@ func TestModeratelyLongReplyIsChunkedIntoMessages(t *testing.T) {
 	h := newHarness(t).startSession("main")
 	h.runner.replyPayload = strings.Repeat("строка ответа\n", 300)
 
-	h.send("покажи")
+	h.sendAwaiting("покажи", 2)
 
 	messages := h.tg.messages()
 	require.Greater(t, len(messages), 1, "should be split across messages")
@@ -77,4 +77,17 @@ func TestCaptureFailureIsReportedToUser(t *testing.T) {
 	h.send("привет")
 
 	assert.Contains(t, h.lastMessage(), "не удалось прочитать экран")
+}
+
+func TestReplyIsDeliveredEvenIfTheBridgeIsShuttingDown(t *testing.T) {
+	h := newHarness(t).startSession("main")
+	h.runner.replyPayload = strings.Repeat("строка ответа\n", 300)
+
+	h.send("покажи")
+
+	messages := h.tg.messages()
+	require.Greater(t, len(messages), 1,
+		"cancelling the bridge after the first chunk must not truncate an answer already produced")
+	assert.Equal(t, strings.Count(strings.Join(messages, ""), "строка ответа"), 300,
+		"every line of the answer must reach the user")
 }

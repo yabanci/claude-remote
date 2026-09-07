@@ -37,7 +37,11 @@ go install github.com/yabanci/claude-remote/cmd/claude-remote@latest
 
 Or grab a binary from [Releases](https://github.com/yabanci/claude-remote/releases).
 
-Requirements: `tmux`, and the `claude` CLI on your `PATH`.
+Requirements: `tmux`, the `claude` CLI on your `PATH`, and Go 1.25+ if building from source.
+
+The 1.25 floor is deliberate: the bridge speaks TLS to Telegram, and Go standard libraries
+older than 1.25.11 carry CVEs in `crypto/tls`, `crypto/x509` and `net/http` that this code path
+actually reaches — `govulncheck` in CI fails the build on them.
 
 ## Setup
 
@@ -153,7 +157,15 @@ golangci-lint run ./...
 go test ./internal/tmux -bench BenchmarkCapturePane -benchmem
 ```
 
-Coverage: `tmux` 90%, `service` 86%, `bridge` 78%, `config` 75%, `telegram` 73%, `cmd` 52%.
+Coverage: `tmux` 90%, `service` 86%, `bridge` 79%, `telegram` 78%, `config` 75%, `cmd` 52%.
+
+The suite is layered: pure-function unit tests, fuzz targets for the two functions with hard
+invariants (`SplitForTelegram` must rejoin to the original with every chunk valid UTF-8;
+`DiffTail` must return a substring of the new screen), integration tests that drive a real
+`tmux`, and end-to-end tests that run the whole loop against a real session and a fake Bot API —
+including output that scrolls past the visible pane, consecutive turns, and a goroutine-leak check.
+
+CI runs on Linux and macOS, plus `govulncheck` and a 60-second fuzz round per target.
 
 Anything that shells out sits behind an interface declared at the call site (`bridge.Runner`,
 `service.CommandRunner`, `service.platform`), so the whole suite runs without a tmux session,
