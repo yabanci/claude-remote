@@ -237,6 +237,11 @@ func (h *harness) deliver(msg telegram.Message) {
 
 func (h *harness) runUntilReply() {
 	h.t.Helper()
+	h.runUntilReplies(1)
+}
+
+func (h *harness) runUntilReplies(want int) {
+	h.t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -244,9 +249,19 @@ func (h *harness) runUntilReply() {
 		_ = h.bridge.Run(ctx)
 	}()
 
-	waitUntil(h.t, func() bool { return h.tg.replyCount() > 0 })
+	waitUntil(h.t, func() bool { return h.tg.replyCount() >= want })
 	cancel()
 	h.awaitStop(done)
+}
+
+func (h *harness) sendAwaiting(text string, wantReplies int) {
+	h.t.Helper()
+	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &telegram.Message{
+		Chat: telegram.Chat{ID: 1},
+		From: &telegram.User{ID: testUserID},
+		Text: text,
+	}}}
+	h.runUntilReplies(wantReplies)
 }
 
 func (h *harness) runBriefly() {

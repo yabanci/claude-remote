@@ -20,6 +20,8 @@ const (
 	maxInlineReplyLen   = 3500
 	maxTotalInlineLen   = 12000
 	getUpdatesTimeoutS  = 25
+
+	replyDeliveryTimeout = 2 * time.Minute
 )
 
 type Bridge struct {
@@ -223,12 +225,15 @@ func sanitizeFileName(name string) string {
 }
 
 func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
+	defer cancel()
+
 	if len(text) > maxTotalInlineLen {
-		b.replyAsDocument(ctx, chatID, text)
+		b.replyAsDocument(sendCtx, chatID, text)
 		return
 	}
 	for _, chunk := range SplitForTelegram(text, maxInlineReplyLen) {
-		if err := b.tg.SendMessage(ctx, chatID, chunk); err != nil {
+		if err := b.tg.SendMessage(sendCtx, chatID, chunk); err != nil {
 			b.log.Error("send message failed", "err", err)
 			return
 		}
