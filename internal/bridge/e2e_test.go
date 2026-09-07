@@ -1,6 +1,7 @@
 package bridge_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"runtime/pprof"
 	"strings"
 	"sync"
 	"testing"
@@ -62,11 +63,11 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg.Sessions = map[string]config.SessionConfig{
 		lh.session: {Dir: t.TempDir(), Command: ""},
 	}
-	cfg.Settle.PollIntervalMS = 200
-	cfg.Settle.StableRounds = 3
-	cfg.Settle.HardCapSeconds = 30
-	cfg.Settle.ColdStartDelayMS = 500
-	cfg.Settle.PostSendDelayMS = 500
+	cfg.Settle.PollIntervalMS = 400
+	cfg.Settle.StableRounds = 4
+	cfg.Settle.HardCapSeconds = 45
+	cfg.Settle.ColdStartDelayMS = 1000
+	cfg.Settle.PostSendDelayMS = 1500
 
 	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -171,15 +172,20 @@ func TestLiveSecondTurnDoesNotRepeatTheFirst(t *testing.T) {
 		"each reply must be the diff for its own turn, not the whole screen")
 }
 
-func TestLiveNoGoroutineLeakAcrossTurns(t *testing.T) {
+func bridgeGoroutines(t *testing.T) int {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, pprof.Lookup("goroutine").WriteTo(&buf, 1))
+	return strings.Count(buf.String(), "claude-remote/internal/bridge.")
+}
+
+func TestLiveBridgeLeavesNoGoroutinesBehind(t *testing.T) {
 	lh := newLiveHarness(t)
-	before := runtime.NumGoroutine()
+
 	lh.queue("echo turn-a", "echo turn-b", "echo turn-c")
-
-	lh.runUntil(3, 90*time.Second)
-
+	lh.runUntil(3, 120*time.Second)
 	time.Sleep(500 * time.Millisecond)
-	after := runtime.NumGoroutine()
-	assert.LessOrEqual(t, after, before+2,
-		"goroutines should not accumulate per handled message (before=%d after=%d)", before, after)
+
+	assert.Zero(t, bridgeGoroutines(t),
+		"after Run returns, no bridge goroutine may still be alive")
 }
