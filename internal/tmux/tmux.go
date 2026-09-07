@@ -12,10 +12,9 @@ import (
 )
 
 const (
-	HistoryLimit    = 5000
-	controlTimeout  = 5 * time.Second
-	captureTimeout  = 15 * time.Second
-	pasteBufferName = "claude-remote-input"
+	HistoryLimit   = 5000
+	controlTimeout = 5 * time.Second
+	captureTimeout = 15 * time.Second
 )
 
 var ErrTimeout = errors.New("tmux did not answer in time")
@@ -95,10 +94,10 @@ func SendKeys(session, text string) error {
 }
 
 func pasteLiterally(session, text string) error {
-	if _, err := run(controlTimeout, text, "load-buffer", "-b", pasteBufferName, "-"); err != nil {
+	if _, err := run(controlTimeout, text, "load-buffer", "-"); err != nil {
 		return fmt.Errorf("load input buffer for %s: %w", session, err)
 	}
-	if _, err := run(controlTimeout, "", "paste-buffer", "-d", "-p", "-b", pasteBufferName, "-t", session); err != nil {
+	if _, err := run(controlTimeout, "", "paste-buffer", "-d", "-p", "-t", session); err != nil {
 		return fmt.Errorf("paste input into %s: %w", session, err)
 	}
 	return nil
