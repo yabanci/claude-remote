@@ -267,7 +267,7 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	reply := FormatReply(produced)
+	reply := FormatReply(produced, b.log)
 	if reply == "" {
 		reply = "(сессия ничего не вывела — см. /cr_status)"
 	}

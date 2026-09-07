@@ -25,12 +25,12 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   Extracted `run(args, stdout, stderr) int` and `runBridge(ctx, args) error`; `main` is now
   a thin wrapper around both. Coverage is 81.2%.
 
-- [ ] **Warn when the reply carries no known TUI marker.** `FormatReply` falls back to
+- [x] **Warn when the reply carries no known TUI marker.** `FormatReply` falls back to
   `CleanReply` when it finds no `⏺` block. That fallback is also what happens if a future
   Claude Code release changes its markers — the bridge would quietly start relaying screen
-  scrapings again. Add a detector: when the fallback is used *and* the text is longer than
-  a few lines, log a warning naming the markers that were expected. Do not change what the
-  user receives. Test both branches.
+  scrapings again. `FormatReply` now takes a `*slog.Logger` and warns, naming the expected
+  markers, when the fallback text is 4+ lines; the user-visible text is unchanged either
+  way. Tested both the warn and no-warn paths.
 
 - [ ] **Add `/cr_peek`.** Returns the current pane of the active session, formatted the
   same way as a reply, without typing anything into the session. Useful when a turn is

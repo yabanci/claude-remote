@@ -1,6 +1,8 @@
 package bridge_test
 
 import (
+	"bytes"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,13 +40,13 @@ const realPaneWithToolsAndAnswer = `⏺ Read(README.md)
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`
 
 func TestFormatReplyReturnsOnlyTheAnswer(t *testing.T) {
-	got := bridge.FormatReply(realPaneWithAnswer)
+	got := bridge.FormatReply(realPaneWithAnswer, nil)
 
 	assert.Equal(t, "391", got, "a chat message is the answer, not a screen")
 }
 
 func TestFormatReplyDropsToolLogsButKeepsProse(t *testing.T) {
-	got := bridge.FormatReply(realPaneWithToolsAndAnswer)
+	got := bridge.FormatReply(realPaneWithToolsAndAnswer, nil)
 
 	assert.Equal(t, "Тесты проходят, README описывает сборку через make.\nНичего чинить не нужно.", got)
 	assert.NotContains(t, got, "Read(")
@@ -61,7 +63,7 @@ func TestExtractAnswerCountsToolBlocks(t *testing.T) {
 func TestFormatReplyReportsToolsWhenThereIsNoProse(t *testing.T) {
 	pane := "⏺ Bash(make build)\n  ⎿  built\n\n✻ done"
 
-	got := bridge.FormatReply(pane)
+	got := bridge.FormatReply(pane, nil)
 
 	assert.Contains(t, got, "выполнила 1 действий")
 }
@@ -69,7 +71,7 @@ func TestFormatReplyReportsToolsWhenThereIsNoProse(t *testing.T) {
 func TestFormatReplyFallsBackToCleanTextWithoutMarkers(t *testing.T) {
 	pane := "$ echo hi\nhi\n────────────\n  Context ░░░ 6% (58k/1.0M)"
 
-	got := bridge.FormatReply(pane)
+	got := bridge.FormatReply(pane, nil)
 
 	assert.Contains(t, got, "hi")
 	assert.NotContains(t, got, "Context ")
@@ -78,9 +80,29 @@ func TestFormatReplyFallsBackToCleanTextWithoutMarkers(t *testing.T) {
 func TestFormatReplyKeepsMultilineAnswerShape(t *testing.T) {
 	pane := "⏺ Нашёл три места:\n\n  1. первый\n  2. второй\n  3. третий\n\n✻ done"
 
-	got := bridge.FormatReply(pane)
+	got := bridge.FormatReply(pane, nil)
 
 	assert.Contains(t, got, "Нашёл три места:")
 	assert.Contains(t, got, "1. первый")
 	assert.Contains(t, got, "3. третий")
+}
+
+func TestFormatReplyWarnsWhenFallingBackOnLongText(t *testing.T) {
+	pane := "$ echo hi\nline one\nline two\nline three\nline four\nline five"
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	bridge.FormatReply(pane, log)
+
+	assert.Contains(t, buf.String(), "no known TUI marker")
+}
+
+func TestFormatReplyDoesNotWarnOnShortChromeOnlyFallback(t *testing.T) {
+	pane := "$ echo hi\nhi"
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	bridge.FormatReply(pane, log)
+
+	assert.Empty(t, buf.String())
 }

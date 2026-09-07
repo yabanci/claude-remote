@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -11,6 +12,8 @@ const (
 	toolResultMarker = "⎿"
 	spinnerMarker    = "✻"
 	markerGutter     = "  "
+
+	fallbackWarnMinLines = 4
 )
 
 var toolCallPattern = regexp.MustCompile(`^[A-Z][A-Za-z]*\(`)
@@ -63,7 +66,7 @@ func stripMarkerGutter(line string) string {
 	return strings.TrimPrefix(line, markerGutter)
 }
 
-func FormatReply(pane string) string {
+func FormatReply(pane string, log *slog.Logger) string {
 	answer := ExtractAnswer(pane)
 	if answer.Text != "" {
 		return answer.Text
@@ -71,5 +74,11 @@ func FormatReply(pane string) string {
 	if answer.ToolBlocks > 0 {
 		return fmt.Sprintf("сессия выполнила %d действий, но текстового ответа не дала", answer.ToolBlocks)
 	}
-	return CleanReply(pane)
+
+	cleaned := CleanReply(pane)
+	if log != nil && strings.Count(cleaned, "\n") >= fallbackWarnMinLines-1 {
+		log.Warn("reply had no known TUI marker, falling back to raw pane text",
+			"expected_markers", []string{answerMarker, toolResultMarker})
+	}
+	return cleaned
 }
