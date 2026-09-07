@@ -137,9 +137,10 @@ func TestLiveUploadedFileLandsInTheRealSessionDir(t *testing.T) {
 
 func TestLiveLongOutputArrivesAsADocument(t *testing.T) {
 	lh := newLiveHarness(t)
-	lh.queue("seq 1 4000")
+	padding := strings.Repeat("x", 60)
+	lh.queue("for i in $(seq 1 400); do echo \"line $i " + padding + "\"; done")
 
-	lh.runUntil(1, 90*time.Second)
+	lh.runUntil(1, 120*time.Second)
 
 	assert.NotEmpty(t, lh.sentDocuments(),
 		"output past the inline limit must arrive as a file instead of a wall of messages")

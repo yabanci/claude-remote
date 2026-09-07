@@ -7,6 +7,8 @@ import (
 	"strconv"
 )
 
+const HistoryLimit = 5000
+
 func Exists(session string) bool {
 	cmd := exec.Command("tmux", "has-session", "-t", session)
 	return cmd.Run() == nil
@@ -23,6 +25,11 @@ func Start(session, dir, command string) error {
 
 	if err := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", dir).Run(); err != nil {
 		return fmt.Errorf("create tmux session %s: %w", session, err)
+	}
+
+	limit := strconv.Itoa(HistoryLimit)
+	if err := exec.Command("tmux", "set-option", "-t", session, "history-limit", limit).Run(); err != nil {
+		return fmt.Errorf("set history-limit for %s: %w", session, err)
 	}
 	if command == "" {
 		return nil

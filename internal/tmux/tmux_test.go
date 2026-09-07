@@ -126,3 +126,15 @@ func TestStartFailsOnMissingDirectory(t *testing.T) {
 
 	assert.Error(t, tmux.Start(session, "/definitely/not/a/directory", ""))
 }
+
+func TestStartPinsHistoryLimit(t *testing.T) {
+	requireTmux(t)
+	session := uniqueSession(t)
+	require.NoError(t, tmux.Start(session, t.TempDir(), ""))
+
+	out, err := exec.Command("tmux", "show-options", "-t", session, "history-limit").Output()
+
+	require.NoError(t, err)
+	assert.Contains(t, string(out), fmt.Sprint(tmux.HistoryLimit),
+		"capture depth is meaningless if the session keeps fewer lines than we ask for")
+}
