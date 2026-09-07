@@ -57,7 +57,7 @@ func TestSendMessagePostsChatIDAndText(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
 	})
 
-	err := client.SendMessage(context.Background(), 42, "hello there")
+	err := client.Send(context.Background(), 42, "hello there", telegram.SendOptions{})
 
 	require.NoError(t, err)
 	assert.Equal(t, "42", gotChatID)

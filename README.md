@@ -38,6 +38,11 @@ prompt it just typed, takes everything after it, and reduces that to the answer:
 - if the session produced only tool activity, you get one line saying so rather than a log
 - if nothing matches the expected shape, the raw pane is cleaned and sent, so nothing is lost silently
 
+The chat is treated as a chat, not a terminal: while the session is thinking you see Telegram's
+typing indicator, answers come back as replies to the message that asked, and when the session
+opens a numbered menu it arrives as tappable buttons — tapping one sends that choice into the
+session.
+
 An interactive dialog is never typed into. Prose is held back with the dialog shown to you; a short
 answer (`1`, `2`, `yes`, `нет`) is passed through, so you can answer a menu deliberately. The
 first-run "do you trust this folder?" question is the one thing the bridge will not relay an answer
@@ -119,6 +124,8 @@ sessions:
   work:
     dir: ~/work/api
     command: claude
+api_base: ""                        # optional: a self-hosted Bot API server
+max_retries: 3                      # retries when Telegram answers 429
 settle:
   poll_interval_ms: 1500            # how often to re-read the pane
   stable_rounds: 3                  # unchanged reads that mean "done"
