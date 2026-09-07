@@ -75,7 +75,7 @@ actually reaches — `govulncheck` in CI fails the build on them.
    claude-remote init
    ```
 
-   It asks for the token, your numeric Telegram user id (optional — see below), and a default working directory. The config lands in `~/.config/claude-remote/config.yaml` with `0600` permissions.
+   It asks for the token, your numeric Telegram user id (optional — see below), and a default working directory. The config is written with `0600` permissions to the OS config directory: `~/Library/Application Support/claude-remote/config.yaml` on macOS, `~/.config/claude-remote/config.yaml` on Linux.
 
 3. Start it:
 
@@ -110,7 +110,7 @@ Replies longer than ~12k characters arrive as a `.txt` attachment instead of a w
 
 ## Configuration
 
-`~/.config/claude-remote/config.yaml`:
+Config file (see paths above):
 
 ```yaml
 bot_token: "123456:ABC-DEF..."      # or set CLAUDE_REMOTE_BOT_TOKEN
@@ -138,6 +138,10 @@ settle:
 `CLAUDE_REMOTE_BOT_TOKEN` overrides `bot_token`, so you can keep the token out of the file entirely.
 
 Tune `stable_rounds` and `poll_interval_ms` if replies arrive truncated (raise them) or feel sluggish (lower them). The trade-off is real: the bridge cannot tell "thinking" from "finished", it can only tell "the screen stopped changing".
+
+The installed service inherits the `PATH` of the shell that installed it. That matters: launchd
+and systemd hand a service a minimal `PATH`, and `tmux` from Homebrew would not be found.
+Install from a shell where `tmux -V` and `claude --version` both work.
 
 ## Security
 

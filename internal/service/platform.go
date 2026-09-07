@@ -14,7 +14,8 @@ const (
 
 type platform interface {
 	unitPath() (string, error)
-	render(execPath, logDir string) string
+	logDir() (string, error)
+	render(execPath, logDir, searchPath string) string
 	enable(runner CommandRunner, unitPath string) error
 	disable(runner CommandRunner, unitPath string) error
 	status(runner CommandRunner) (string, error)
@@ -41,8 +42,16 @@ func (launchd) unitPath() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", launchdPlist), nil
 }
 
-func (launchd) render(execPath, logDir string) string {
-	return fmt.Sprintf(launchdTemplate, launchdLabel, execPath, logDir, logDir)
+func (launchd) logDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home dir: %w", err)
+	}
+	return filepath.Join(home, "Library", "Logs", "claude-remote"), nil
+}
+
+func (launchd) render(execPath, logDir, searchPath string) string {
+	return fmt.Sprintf(launchdTemplate, launchdLabel, execPath, searchPath, logDir, logDir)
 }
 
 func (launchd) enable(runner CommandRunner, unitPath string) error {
@@ -75,8 +84,12 @@ func (systemd) unitPath() (string, error) {
 	return filepath.Join(home, ".config", "systemd", "user", systemdUnit), nil
 }
 
-func (systemd) render(execPath, _ string) string {
-	return fmt.Sprintf(systemdTemplate, execPath)
+func (systemd) logDir() (string, error) {
+	return "", nil
+}
+
+func (systemd) render(execPath, _, searchPath string) string {
+	return fmt.Sprintf(systemdTemplate, searchPath, execPath)
 }
 
 func (systemd) enable(runner CommandRunner, _ string) error {
@@ -113,6 +126,11 @@ const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <string>%s</string>
     <string>run</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>%s</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -129,6 +147,7 @@ const systemdTemplate = `[Unit]
 Description=claude-remote Telegram bridge
 
 [Service]
+Environment="PATH=%s"
 ExecStart=%s run
 Restart=on-failure
 RestartSec=5

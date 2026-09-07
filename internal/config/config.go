@@ -81,6 +81,17 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
+
+	var declared struct {
+		Sessions map[string]SessionConfig `yaml:"sessions"`
+	}
+	if err := yaml.Unmarshal(data, &declared); err != nil {
+		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if declared.Sessions != nil {
+		cfg.Sessions = declared.Sessions
+	}
+
 	applySettleDefaults(&cfg.Settle)
 	return cfg, nil
 }
