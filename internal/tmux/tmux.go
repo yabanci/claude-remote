@@ -47,7 +47,11 @@ func Interrupt(session string) error {
 }
 
 func CapturePane(session string, historyLines int) (string, error) {
-	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", session, "-S", "-"+strconv.Itoa(historyLines)).Output()
+	args := []string{"capture-pane", "-p", "-t", session}
+	if historyLines > 0 {
+		args = append(args, "-S", "-"+strconv.Itoa(historyLines))
+	}
+	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("capture pane %s: %w", session, err)
 	}

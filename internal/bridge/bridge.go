@@ -16,6 +16,7 @@ import (
 
 const (
 	captureHistoryLines = 5000
+	visiblePaneOnly     = 0
 	maxInlineReplyLen   = 3500
 	maxTotalInlineLen   = 12000
 	getUpdatesTimeoutS  = 25
@@ -137,9 +138,7 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		time.Sleep(b.cfg.Settle.ColdStartDelay())
 	}
 
-	capture := func() (string, error) { return b.runner.CapturePane(name, captureHistoryLines) }
-
-	before, err := capture()
+	before, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
 		return
@@ -154,9 +153,15 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	onInterim := func(elapsed time.Duration) {
 		b.reply(ctx, chatID, fmt.Sprintf("ещё работает (%dс)…", int(elapsed.Seconds())))
 	}
-	after, err := WaitForSettle(capture, b.cfg.Settle, onInterim)
-	if err != nil {
+	watchVisible := func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
+	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, onInterim); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("ошибка чтения экрана: %v", err))
+		return
+	}
+
+	after, err := b.runner.CapturePane(name, captureHistoryLines)
+	if err != nil {
+		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
 		return
 	}
 
@@ -211,12 +216,8 @@ func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
 		b.replyAsDocument(ctx, chatID, text)
 		return
 	}
-	for i := 0; i < len(text); i += maxInlineReplyLen {
-		end := i + maxInlineReplyLen
-		if end > len(text) {
-			end = len(text)
-		}
-		if err := b.tg.SendMessage(ctx, chatID, text[i:end]); err != nil {
+	for _, chunk := range SplitForTelegram(text, maxInlineReplyLen) {
+		if err := b.tg.SendMessage(ctx, chatID, chunk); err != nil {
 			b.log.Error("send message failed", "err", err)
 			return
 		}
