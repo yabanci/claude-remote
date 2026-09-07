@@ -37,7 +37,11 @@ go install github.com/yabanci/claude-remote/cmd/claude-remote@latest
 
 Or grab a binary from [Releases](https://github.com/yabanci/claude-remote/releases).
 
-Requirements: `tmux`, and the `claude` CLI on your `PATH`.
+Requirements: `tmux`, the `claude` CLI on your `PATH`, and Go 1.25+ if building from source.
+
+The 1.25 floor is deliberate: the bridge speaks TLS to Telegram, and Go standard libraries
+older than 1.25.11 carry CVEs in `crypto/tls`, `crypto/x509` and `net/http` that this code path
+actually reaches — `govulncheck` in CI fails the build on them.
 
 ## Setup
 
