@@ -43,11 +43,12 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   naming the session and suggesting `/cr_restart`. Test with a runner whose session
   vanishes after `SendKeys`.
 
-- [ ] **Validate session directories when the config loads.** `Config.Validate` checks that
-  `dir` is non-empty but not that it exists, so a typo is only discovered when a message
-  arrives and `tmux.Start` fails. Make `Validate` report every session whose directory is
-  missing, in one error listing all of them rather than failing on the first. Keep
-  `~` expansion working. Test with two bad directories and assert both are named.
+- [x] **Validate session directories when the config loads.** `Config.Validate` checked that
+  `dir` is non-empty but not that it exists, so a typo was only discovered when a message
+  arrived and `tmux.Start` failed. `Validate` now `os.Stat`s every session's dir (through
+  `ExpandDir`, so `~` still works) and reports every one that is missing in a single error,
+  sorted by session name, instead of stopping at the first. Tested with two bad directories
+  and with a `~`-relative one that does resolve.
 
 - [x] **Make `/cr_kill` refuse to kill a session that is not configured.** Done before the
   loop started: it killed any tmux session by name, including one the user runs by hand.

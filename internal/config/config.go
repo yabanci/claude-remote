@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -143,10 +144,22 @@ func (c Config) Validate() error {
 	if _, ok := c.Sessions[c.DefaultSession]; !ok {
 		return fmt.Errorf("default_session %q is not defined in sessions", c.DefaultSession)
 	}
+	var missing []string
 	for name, s := range c.Sessions {
 		if strings.TrimSpace(s.Dir) == "" {
 			return fmt.Errorf("session %q: dir is empty", name)
 		}
+		dir, err := ExpandDir(s.Dir)
+		if err != nil {
+			return fmt.Errorf("session %q: %w", name, err)
+		}
+		if _, err := os.Stat(dir); err != nil {
+			missing = append(missing, fmt.Sprintf("%s (%s)", name, dir))
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("session dir does not exist: %s", strings.Join(missing, ", "))
 	}
 	return nil
 }
