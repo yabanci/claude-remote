@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -108,4 +109,34 @@ func TestExpandDir(t *testing.T) {
 	got, err = config.ExpandDir("/abs/path")
 	require.NoError(t, err)
 	assert.Equal(t, "/abs/path", got)
+}
+
+func TestSessionsFromFileReplaceDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+bot_token: "x"
+allowed_users: [1]
+default_session: work
+sessions:
+  work:
+    dir: /tmp/work
+    command: claude
+`), 0o600))
+
+	cfg, err := config.Load(path)
+
+	require.NoError(t, err)
+	assert.Len(t, cfg.Sessions, 1, "a session the user never declared must not appear")
+	assert.NotContains(t, cfg.Sessions, "main")
+	assert.Equal(t, "/tmp/work", cfg.Sessions["work"].Dir)
+}
+
+func TestDefaultSessionSurvivesWhenFileOmitsSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("bot_token: \"x\"\nallowed_users: [1]\n"), 0o600))
+
+	cfg, err := config.Load(path)
+
+	require.NoError(t, err)
+	assert.Contains(t, cfg.Sessions, "main")
 }

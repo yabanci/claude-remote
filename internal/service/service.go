@@ -26,10 +26,11 @@ func (execRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
 }
 
 type Manager struct {
-	execPath string
-	runner   CommandRunner
-	platform platform
-	platErr  error
+	execPath   string
+	searchPath string
+	runner     CommandRunner
+	platform   platform
+	platErr    error
 }
 
 func NewManager(execPath string) *Manager {
@@ -45,7 +46,19 @@ func NewManagerWithRunner(execPath string, runner CommandRunner) *Manager {
 }
 
 func newManagerForPlatform(execPath string, runner CommandRunner, p platform) *Manager {
-	return &Manager{execPath: execPath, runner: runner, platform: p}
+	return &Manager{
+		execPath:   execPath,
+		searchPath: currentSearchPath(),
+		runner:     runner,
+		platform:   p,
+	}
+}
+
+func currentSearchPath() string {
+	if p := os.Getenv("PATH"); p != "" {
+		return p
+	}
+	return "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 }
 
 func (m *Manager) Install() error {
@@ -61,7 +74,17 @@ func (m *Manager) Install() error {
 		return fmt.Errorf("create service dir: %w", err)
 	}
 
-	content := m.platform.render(m.execPath, filepath.Dir(unitPath))
+	logDir, err := m.platform.logDir()
+	if err != nil {
+		return err
+	}
+	if logDir != "" {
+		if err := os.MkdirAll(logDir, 0o755); err != nil {
+			return fmt.Errorf("create log dir: %w", err)
+		}
+	}
+
+	content := m.platform.render(m.execPath, logDir, m.searchPath)
 	if err := os.WriteFile(unitPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write service file: %w", err)
 	}

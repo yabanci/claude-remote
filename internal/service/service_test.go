@@ -223,3 +223,48 @@ func TestExecRunnerRunsRealCommands(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hello", strings.TrimSpace(string(out)))
 }
+
+func TestInstalledServiceCarriesTheSearchPath(t *testing.T) {
+	for _, tc := range platformCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+
+			require.NoError(t, mgr.Install())
+
+			unitPath := filepath.Join(append([]string{home}, tc.unitRelPath...)...)
+			data, err := os.ReadFile(unitPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), "/opt/homebrew/bin",
+				"a launchd/systemd service gets a minimal PATH, so tmux and claude would not be found")
+		})
+	}
+}
+
+func TestSearchPathFallsBackWhenEnvIsEmpty(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", "")
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, launchd{})
+
+	require.NoError(t, mgr.Install())
+
+	assert.Contains(t, mgr.searchPath, "/usr/bin")
+}
+
+func TestLaunchdLogsGoToTheLogsDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, launchd{})
+
+	require.NoError(t, mgr.Install())
+
+	plist := filepath.Join(home, "Library", "LaunchAgents", "dev.claude-remote.bridge.plist")
+	data, err := os.ReadFile(plist)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), filepath.Join(home, "Library", "Logs", "claude-remote"))
+	assert.NotContains(t, string(data), filepath.Join(home, "Library", "LaunchAgents", "claude-remote.err.log"),
+		"logs do not belong in the agents directory")
+	assert.DirExists(t, filepath.Join(home, "Library", "Logs", "claude-remote"))
+}
