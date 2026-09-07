@@ -47,7 +47,8 @@ func TestBridgeRefusesToTypeIntoTrustDialog(t *testing.T) {
 	h.send("сколько будет 2+2")
 
 	assert.Contains(t, h.lastMessage(), "ждёт подтверждения доверия")
-	assert.Contains(t, h.lastMessage(), "tmux attach -t main")
+	assert.Contains(t, h.lastMessage(), "tmux attach -t "+bridge.TmuxSessionName("main"),
+		"the hint must name the session as tmux knows it, not as the config calls it")
 	assert.Empty(t, h.runner.lastSentKeys(),
 		"a security prompt must never be answered on the user behalf")
 }

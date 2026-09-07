@@ -14,11 +14,30 @@ type CallbackQuery struct {
 }
 
 type Message struct {
-	MessageID int64     `json:"message_id"`
-	Chat      Chat      `json:"chat"`
-	From      *User     `json:"from"`
-	Text      string    `json:"text"`
-	Document  *Document `json:"document"`
+	MessageID int64       `json:"message_id"`
+	Chat      Chat        `json:"chat"`
+	From      *User       `json:"from"`
+	Text      string      `json:"text"`
+	Caption   string      `json:"caption"`
+	Document  *Document   `json:"document"`
+	Photo     []PhotoSize `json:"photo"`
+}
+
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
+}
+
+func (m Message) LargestPhoto() *PhotoSize {
+	var best *PhotoSize
+	for i := range m.Photo {
+		if best == nil || m.Photo[i].Width*m.Photo[i].Height > best.Width*best.Height {
+			best = &m.Photo[i]
+		}
+	}
+	return best
 }
 
 type Chat struct {

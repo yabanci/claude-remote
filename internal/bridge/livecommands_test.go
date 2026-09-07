@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yabanci/claude-remote/internal/config"
-	"github.com/yabanci/claude-remote/internal/tmux"
 )
 
 func TestLiveHelpListsEveryCommand(t *testing.T) {
@@ -33,7 +32,7 @@ func TestLiveStatusReflectsRealTmuxState(t *testing.T) {
 	lh.runUntil(1, 30*time.Second)
 	assert.Contains(t, lh.lastReply(), "остановлена")
 
-	require.NoError(t, tmux.Start(lh.session, lh.sessionDir, ""))
+	liveStart(t, lh.session, lh.sessionDir)
 	lh.queue("/cr_status")
 	lh.runUntil(2, 30*time.Second)
 
@@ -45,8 +44,8 @@ func TestLiveNewCreatesRealSessionAndPersistsIt(t *testing.T) {
 	projectDir := t.TempDir()
 	extra := lh.session + "-extra"
 	t.Cleanup(func() {
-		if tmux.Exists(extra) {
-			_ = tmux.Kill(extra)
+		if liveExists(extra) {
+			_ = liveKill(extra)
 		}
 	})
 
@@ -54,7 +53,7 @@ func TestLiveNewCreatesRealSessionAndPersistsIt(t *testing.T) {
 	lh.runUntil(1, 60*time.Second)
 
 	assert.Contains(t, lh.lastReply(), "создана и запущена")
-	assert.True(t, tmux.Exists(extra), "a real tmux session must exist afterwards")
+	assert.True(t, liveExists(extra), "a real tmux session must exist afterwards")
 
 	saved, err := config.Load(lh.configPath)
 	require.NoError(t, err)
@@ -66,15 +65,15 @@ func TestLiveUseSwitchesWhichSessionReceivesMessages(t *testing.T) {
 	other := lh.session + "-other"
 	otherDir := t.TempDir()
 	t.Cleanup(func() {
-		if tmux.Exists(other) {
-			_ = tmux.Kill(other)
+		if liveExists(other) {
+			_ = liveKill(other)
 		}
 	})
 
 	lh.queue("/cr_new "+other+" "+otherDir, "echo landed-in-second-session")
 	lh.runUntil(2, 90*time.Second)
 
-	pane, err := tmux.CapturePane(other, 200)
+	pane, err := liveCapture(other, 200)
 	require.NoError(t, err)
 	assert.Contains(t, pane, "landed-in-second-session",
 		"after /cr_new the new session becomes active and must receive the next message")
@@ -82,20 +81,20 @@ func TestLiveUseSwitchesWhichSessionReceivesMessages(t *testing.T) {
 
 func TestLiveKillStopsTheRealSession(t *testing.T) {
 	lh := newLiveHarness(t)
-	require.NoError(t, tmux.Start(lh.session, lh.sessionDir, ""))
-	require.True(t, tmux.Exists(lh.session))
+	liveStart(t, lh.session, lh.sessionDir)
+	require.True(t, liveExists(lh.session))
 
 	lh.queue("/cr_kill")
 	lh.runUntil(1, 30*time.Second)
 
 	assert.Contains(t, lh.lastReply(), "остановлена")
-	assert.False(t, tmux.Exists(lh.session), "the tmux session must actually be gone")
+	assert.False(t, liveExists(lh.session), "the tmux session must actually be gone")
 }
 
 func TestLiveInterruptStopsARunningCommand(t *testing.T) {
 	lh := newLiveHarness(t)
-	require.NoError(t, tmux.Start(lh.session, lh.sessionDir, ""))
-	require.NoError(t, tmux.SendKeys(lh.session, "sleep 300"))
+	liveStart(t, lh.session, lh.sessionDir)
+	require.NoError(t, liveSendKeys(lh.session, "sleep 300"))
 	time.Sleep(2 * time.Second)
 
 	lh.queue("/cr_interrupt")
@@ -103,7 +102,7 @@ func TestLiveInterruptStopsARunningCommand(t *testing.T) {
 
 	assert.Contains(t, lh.lastReply(), "Ctrl-C")
 	require.Eventually(t, func() bool {
-		pane, err := tmux.CapturePane(lh.session, 100)
+		pane, err := liveCapture(lh.session, 100)
 		return err == nil && strings.Contains(pane, "^C")
 	}, 15*time.Second, 300*time.Millisecond, "the interrupt must reach the running command")
 }
@@ -120,7 +119,7 @@ func TestLiveSendDeliversARealFile(t *testing.T) {
 
 func TestLiveUploadedFileLandsInTheRealSessionDir(t *testing.T) {
 	lh := newLiveHarness(t)
-	require.NoError(t, tmux.Start(lh.session, lh.sessionDir, ""))
+	liveStart(t, lh.session, lh.sessionDir)
 
 	lh.queueDocument("notes.txt")
 	lh.runUntil(1, 60*time.Second)
@@ -130,7 +129,7 @@ func TestLiveUploadedFileLandsInTheRealSessionDir(t *testing.T) {
 	require.NoError(t, err, "the uploaded file must exist on disk")
 	assert.Equal(t, "содержимое присланного файла", string(body))
 
-	pane, err := tmux.CapturePane(lh.session, 200)
+	pane, err := liveCapture(lh.session, 200)
 	require.NoError(t, err)
 	assert.Contains(t, pane, "telegram-inbox/notes.txt", "the session must be told where the file went")
 }

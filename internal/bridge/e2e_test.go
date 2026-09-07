@@ -42,6 +42,27 @@ type liveHarness struct {
 	served    int
 }
 
+func liveStart(t *testing.T, name, dir string) {
+	t.Helper()
+	require.NoError(t, tmux.Start(bridge.TmuxSessionName(name), dir, ""))
+}
+
+func liveExists(name string) bool {
+	return tmux.Exists(bridge.TmuxSessionName(name))
+}
+
+func liveKill(name string) error {
+	return tmux.Kill(bridge.TmuxSessionName(name))
+}
+
+func liveSendKeys(name, text string) error {
+	return tmux.SendKeys(bridge.TmuxSessionName(name), text)
+}
+
+func liveCapture(name string, lines int) (string, error) {
+	return tmux.CapturePane(bridge.TmuxSessionName(name), lines)
+}
+
 func newLiveHarness(t *testing.T) *liveHarness {
 	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
@@ -53,8 +74,8 @@ func newLiveHarness(t *testing.T) *liveHarness {
 		session: fmt.Sprintf("cr-live-%d", time.Now().UnixNano()),
 	}
 	t.Cleanup(func() {
-		if tmux.Exists(lh.session) {
-			_ = tmux.Kill(lh.session)
+		if liveExists(lh.session) {
+			_ = liveKill(lh.session)
 		}
 	})
 

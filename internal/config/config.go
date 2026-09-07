@@ -41,6 +41,7 @@ type Config struct {
 	APIBase        string                   `yaml:"api_base"`
 	MaxRetries     int                      `yaml:"max_retries"`
 	AllowedUsers   []int64                  `yaml:"allowed_users"`
+	AllowedChats   []int64                  `yaml:"allowed_chats"`
 	DefaultSession string                   `yaml:"default_session"`
 	Sessions       map[string]SessionConfig `yaml:"sessions"`
 	Settle         SettleConfig             `yaml:"settle"`
@@ -182,6 +183,18 @@ func (c Config) IsAllowed(userID int64) bool {
 
 func (c Config) NeedsBootstrap() bool {
 	return len(c.AllowedUsers) == 0
+}
+
+func (c Config) IsAllowedChat(chatID int64) bool {
+	if len(c.AllowedChats) == 0 {
+		return true
+	}
+	for _, id := range c.AllowedChats {
+		if id == chatID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s SettleConfig) PollInterval() time.Duration {
