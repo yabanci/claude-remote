@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: "1.26"
       - name: Install tmux (macOS)
         if: runner.os == 'macOS'
         run: brew install tmux
@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: "1.26"
       - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: "1.26"
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
 
@@ -56,7 +56,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "stable"
+          go-version: "1.26"
       - name: Fuzz reply chunking
         run: go test ./internal/bridge -run FuzzSplitForTelegram -fuzz FuzzSplitForTelegram -fuzztime 60s
       - name: Fuzz pane diffing
