@@ -192,6 +192,15 @@ invariants (`SplitForTelegram` must rejoin to the original with every chunk vali
 `tmux`, and end-to-end tests that run the whole loop against a real session and a fake Bot API —
 including output that scrolls past the visible pane, consecutive turns, and a goroutine-leak check.
 
+Every bridge command is exercised against a real `tmux` session, not a mock: `/cr_new` must leave
+a session that actually exists and a config that survives a restart, `/cr_interrupt` must stop a
+running `sleep`, `/cr_send` must deliver a real file, an uploaded file must land on disk and the
+session must be told where, and output past the inline limit must arrive as an attachment.
+
+Two opt-in tests talk to the real Bot API — set `CLAUDE_REMOTE_LIVE_TOKEN_FILE` and
+`CLAUDE_REMOTE_LIVE_CHAT_FILE` to run them. They check that Telegram accepts the inline keyboard
+and chat-action payloads this code builds, which a local fake cannot prove.
+
 CI runs on Linux and macOS, plus `govulncheck` and a 60-second fuzz round per target.
 
 Anything that shells out sits behind an interface declared at the call site (`bridge.Runner`,
