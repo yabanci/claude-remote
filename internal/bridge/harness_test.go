@@ -96,6 +96,12 @@ func (f *fakeRunner) lastSentKeys() string {
 	return f.sentKeys[len(f.sentKeys)-1]
 }
 
+func (f *fakeRunner) setPane(session, content string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.panes[session] = content
+}
+
 func (f *fakeRunner) pane(session string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
