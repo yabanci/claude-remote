@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -148,6 +150,97 @@ func TestServiceInstallRefusesWithInvalidConfig(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid")
+}
+
+func TestRunWithNoArgsPrintsUsageAndFails(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run(nil, &stdout, &stderr)
+
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stdout.String(), "Usage:")
+	assert.Empty(t, stderr.String())
+}
+
+func TestRunUnknownCommandPrintsUsageAndFails(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"frobnicate"}, &stdout, &stderr)
+
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stdout.String(), "Usage:")
+}
+
+func TestRunHelpVariantsPrintUsageAndSucceed(t *testing.T) {
+	for _, alias := range []string{"help", "-h", "--help"} {
+		var stdout, stderr bytes.Buffer
+
+		code := run([]string{alias}, &stdout, &stderr)
+
+		assert.Equal(t, 0, code, "alias %q should exit cleanly", alias)
+		assert.Contains(t, stdout.String(), "Usage:")
+		assert.Empty(t, stderr.String())
+	}
+}
+
+func TestRunVersionPrintsVersionAndSucceeds(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"version"}, &stdout, &stderr)
+
+	assert.Equal(t, 0, code)
+	assert.Contains(t, stdout.String(), version)
+	assert.Empty(t, stderr.String())
+}
+
+func TestRunPropagatesSubcommandErrorToStderr(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"service"}, &stdout, &stderr)
+
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr.String(), "error:")
+	assert.Contains(t, stderr.String(), "usage")
+}
+
+func TestRunDelegatesRunCommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"run", "-config", filepath.Join(t.TempDir(), "absent.yaml")}, &stdout, &stderr)
+
+	assert.Equal(t, 1, code)
+	assert.Contains(t, stderr.String(), "load config")
+}
+
+func TestRunBridgeStopsCleanlyWhenContextIsAlreadyCanceled(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = "123:abc"
+	cfg.AllowedUsers = []int64{1}
+	cfg.APIBase = "http://127.0.0.1:0"
+	cfg.MaxRetries = 3
+	require.NoError(t, config.Save(configPath, cfg))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runBridge(ctx, []string{"-config", configPath})
+
+	assert.NoError(t, err)
+}
+
+func TestRunBridgeWarnsWhenAllowlistIsEmpty(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = "123:abc"
+	require.NoError(t, config.Save(configPath, cfg))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runBridge(ctx, []string{"-config", configPath})
+
+	assert.NoError(t, err, "an empty allowlist bootstraps to the first sender, it does not fail the run")
 }
 
 func TestServiceInstallAcceptsAWorkingConfig(t *testing.T) {
