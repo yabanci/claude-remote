@@ -31,10 +31,15 @@ type liveHarness struct {
 	session string
 	bridge  *bridge.Bridge
 
-	mu      sync.Mutex
-	replies []string
-	queued  []telegram.Update
-	served  int
+	configPath string
+	sessionDir string
+
+	mu        sync.Mutex
+	replies   []string
+	documents []string
+	keyboards [][]string
+	queued    []telegram.Update
+	served    int
 }
 
 func newLiveHarness(t *testing.T) *liveHarness {
@@ -60,8 +65,9 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg.BotToken = "test-token"
 	cfg.AllowedUsers = []int64{55}
 	cfg.DefaultSession = lh.session
+	lh.sessionDir = t.TempDir()
 	cfg.Sessions = map[string]config.SessionConfig{
-		lh.session: {Dir: t.TempDir(), Command: ""},
+		lh.session: {Dir: lh.sessionDir, Command: ""},
 	}
 	cfg.Settle.PollIntervalMS = 400
 	cfg.Settle.StableRounds = 4
@@ -71,8 +77,8 @@ func newLiveHarness(t *testing.T) *liveHarness {
 
 	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	lh.bridge = bridge.New(cfg, filepath.Join(t.TempDir(), "config.yaml"), tg,
-		bridge.NewTmuxRunner(), logger, t.TempDir())
+	lh.configPath = filepath.Join(t.TempDir(), "config.yaml")
+	lh.bridge = bridge.New(cfg, lh.configPath, tg, bridge.NewTmuxRunner(), logger, t.TempDir())
 	return lh
 }
 
@@ -88,10 +94,35 @@ func (lh *liveHarness) serve(w http.ResponseWriter, r *http.Request) {
 		lh.mu.Unlock()
 		data, _ := json.Marshal(batch)
 		_, _ = fmt.Fprintf(w, `{"ok":true,"result":%s}`, data)
+	case strings.Contains(r.URL.Path, "getFile"):
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"file_id":"fid","file_path":"documents/upload.txt"}}`)
+	case strings.Contains(r.URL.Path, "/file/bot"):
+		_, _ = fmt.Fprint(w, "содержимое присланного файла")
+	case strings.Contains(r.URL.Path, "sendDocument"):
+		_ = r.ParseMultipartForm(1 << 20)
+		_, header, err := r.FormFile("document")
+		if err == nil {
+			lh.mu.Lock()
+			lh.documents = append(lh.documents, header.Filename)
+			lh.mu.Unlock()
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
 	case strings.Contains(r.URL.Path, "sendMessage"):
 		_ = r.ParseForm()
 		lh.mu.Lock()
 		lh.replies = append(lh.replies, r.FormValue("text"))
+		if raw := r.FormValue("reply_markup"); raw != "" {
+			var kb telegram.InlineKeyboard
+			if json.Unmarshal([]byte(raw), &kb) == nil {
+				var labels []string
+				for _, row := range kb.Rows {
+					for _, btn := range row {
+						labels = append(labels, btn.Text)
+					}
+				}
+				lh.keyboards = append(lh.keyboards, labels)
+			}
+		}
 		lh.mu.Unlock()
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
 	default:
@@ -114,10 +145,38 @@ func (lh *liveHarness) queue(texts ...string) {
 	}
 }
 
+func (lh *liveHarness) queueDocument(fileName string) {
+	lh.mu.Lock()
+	defer lh.mu.Unlock()
+	lh.queued = append(lh.queued, telegram.Update{
+		UpdateID: int64(len(lh.queued) + 1),
+		Message: &telegram.Message{
+			Chat:     telegram.Chat{ID: 55},
+			From:     &telegram.User{ID: 55},
+			Document: &telegram.Document{FileID: "fid", FileName: fileName},
+		},
+	})
+}
+
+func (lh *liveHarness) sentDocuments() []string {
+	lh.mu.Lock()
+	defer lh.mu.Unlock()
+	return append([]string(nil), lh.documents...)
+}
+
+func (lh *liveHarness) lastReply() string {
+	lh.mu.Lock()
+	defer lh.mu.Unlock()
+	if len(lh.replies) == 0 {
+		return ""
+	}
+	return lh.replies[len(lh.replies)-1]
+}
+
 func (lh *liveHarness) replyCount() int {
 	lh.mu.Lock()
 	defer lh.mu.Unlock()
-	return len(lh.replies)
+	return len(lh.replies) + len(lh.documents)
 }
 
 func (lh *liveHarness) allReplies() string {

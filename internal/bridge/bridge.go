@@ -13,10 +13,11 @@ import (
 
 	"github.com/yabanci/claude-remote/internal/config"
 	"github.com/yabanci/claude-remote/internal/telegram"
+	"github.com/yabanci/claude-remote/internal/tmux"
 )
 
 const (
-	captureHistoryLines = 5000
+	captureHistoryLines = tmux.HistoryLimit
 	visiblePaneOnly     = 0
 	maxInlineReplyLen   = 3500
 	maxTotalInlineLen   = 12000
