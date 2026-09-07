@@ -22,6 +22,7 @@ const (
 	getUpdatesTimeoutS  = 25
 
 	replyDeliveryTimeout = 2 * time.Minute
+	dialogTailLines      = 20
 )
 
 type Bridge struct {
@@ -149,17 +150,41 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	}
 	name := s.name
 
+	watchVisible := func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
+
 	if !b.runner.Exists(name) {
 		if err := b.runner.Start(name, s.dir, s.command); err != nil {
 			b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
 			return
 		}
 		time.Sleep(b.cfg.Settle.ColdStartDelay())
+		if _, err := WaitForSettle(watchVisible, b.cfg.Settle, nil); err != nil {
+			b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
+			return
+		}
 	}
 
 	before, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+		return
+	}
+
+	if AwaitsTrustConfirmation(before) {
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"сессия %q ждёт подтверждения доверия к каталогу %s.\n\n"+
+				"Это вопрос безопасности — ни я, ни бот на него за тебя не отвечаем. Подтверди в терминале:\n"+
+				"  tmux attach -t %s\n\n"+
+				"или один раз запусти claude в этом каталоге. После этого повтори сообщение.",
+			name, s.dir, name))
+		return
+	}
+
+	if AwaitsInteractiveChoice(before) && !IsDeliberateChoice(text) {
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"на экране сессии %q открыт диалог, твоё сообщение туда не отправлено — иначе текст ушёл бы в меню.\n\n%s\n\n"+
+				"Ответь коротко (номер варианта, yes/no) — это я передам как есть. Потом повтори вопрос.",
+			name, visibleTail(before, dialogTailLines)))
 		return
 	}
 
@@ -172,7 +197,6 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	onInterim := func(elapsed time.Duration) {
 		b.reply(ctx, chatID, fmt.Sprintf("ещё работает (%dс)…", int(elapsed.Seconds())))
 	}
-	watchVisible := func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
 	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, onInterim); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("ошибка чтения экрана: %v", err))
 		return
@@ -184,11 +208,15 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	diff := DiffTail(before, after)
-	if diff == "" {
-		diff = "(нет видимых изменений на экране — см. /cr_status)"
+	produced, ok := TailAfterPrompt(after, text)
+	if !ok {
+		produced = DiffTail(before, after)
 	}
-	b.reply(ctx, chatID, diff)
+	reply := FormatReply(produced)
+	if reply == "" {
+		reply = "(сессия ничего не вывела — см. /cr_status)"
+	}
+	b.reply(ctx, chatID, reply)
 }
 
 func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram.Document) {
@@ -214,6 +242,14 @@ func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram
 	}
 
 	b.forwardToSession(ctx, chatID, fmt.Sprintf("[telegram] загружен файл: %s", relPath))
+}
+
+func visibleTail(pane string, lines int) string {
+	all := strings.Split(strings.TrimRight(pane, "\n"), "\n")
+	if len(all) > lines {
+		all = all[len(all)-lines:]
+	}
+	return strings.TrimSpace(strings.Join(all, "\n"))
 }
 
 func sanitizeFileName(name string) string {
