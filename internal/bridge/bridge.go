@@ -195,76 +195,107 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
-	name := s.name
 
-	watchVisible := func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
-
-	if !b.runner.Exists(name) {
-		if err := b.runner.Start(name, s.dir, s.command); err != nil {
-			b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
-			return
-		}
-		time.Sleep(b.cfg.Settle.ColdStartDelay())
-		if _, err := WaitForSettle(watchVisible, b.cfg.Settle, nil); err != nil {
-			b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
-			return
-		}
+	if !b.ensureRunning(ctx, chatID, s) {
+		return
 	}
-
-	before, err := b.runner.CapturePane(name, captureHistoryLines)
-	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+	if b.heldBackByOpenDialog(ctx, chatID, s, text) {
 		return
 	}
 
-	if AwaitsTrustConfirmation(before) {
+	before, err := b.runner.CapturePane(s.name, captureHistoryLines)
+	if err != nil {
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
+		return
+	}
+
+	if !b.sendAndAwait(ctx, chatID, s.name, text) {
+		return
+	}
+	b.deliverAnswer(ctx, chatID, s.name, before, text)
+}
+
+func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) bool {
+	if b.runner.Exists(s.name) {
+		return true
+	}
+	if err := b.runner.Start(s.name, s.dir, s.command); err != nil {
+		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
+		return false
+	}
+
+	time.Sleep(b.cfg.Settle.ColdStartDelay())
+	if _, err := WaitForSettle(b.watchVisible(s.name), b.cfg.Settle, nil); err != nil {
+		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
+		return false
+	}
+	return true
+}
+
+func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessionRef, text string) bool {
+	visible, err := b.runner.CapturePane(s.name, visiblePaneOnly)
+	if err != nil {
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
+		return true
+	}
+
+	if AwaitsTrustConfirmation(visible) {
 		b.reply(ctx, chatID, fmt.Sprintf(
 			"сессия %q ждёт подтверждения доверия к каталогу %s.\n\n"+
 				"Это вопрос безопасности — ни я, ни бот на него за тебя не отвечаем. Подтверди в терминале:\n"+
 				"  tmux attach -t %s\n\n"+
 				"или один раз запусти claude в этом каталоге. После этого повтори сообщение.",
-			name, s.dir, name))
-		return
+			s.name, s.dir, s.name))
+		return true
 	}
 
-	if AwaitsInteractiveChoice(before) && !IsDeliberateChoice(text) {
+	if AwaitsInteractiveChoice(visible) && !IsDeliberateChoice(text) {
 		b.reply(ctx, chatID, fmt.Sprintf(
 			"на экране сессии %q открыт диалог, твоё сообщение туда не отправлено — иначе текст ушёл бы в меню.\n\n%s\n\n"+
 				"Ответь коротко (номер варианта, yes/no) — это я передам как есть. Потом повтори вопрос.",
-			name, visibleTail(before, dialogTailLines)))
-		return
+			s.name, visibleTail(visible, dialogTailLines)))
+		return true
 	}
+	return false
+}
 
+func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text string) bool {
 	if err := b.runner.SendKeys(name, text); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить текст в сессию: %v", err))
-		return
+		return false
 	}
-	time.Sleep(b.cfg.Settle.PostSendDelay())
 
 	stopTyping := b.showTyping(ctx, chatID)
 	defer stopTyping()
 
-	if _, err := WaitForSettle(watchVisible, b.cfg.Settle, nil); err != nil {
+	time.Sleep(b.cfg.Settle.PostSendDelay())
+	if _, err := WaitForSettle(b.watchVisible(name), b.cfg.Settle, nil); err != nil {
 		b.reportCaptureFailure(ctx, chatID, name, err)
-		return
+		return false
 	}
+	return true
+}
 
+func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, text string) {
 	after, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
 		b.reportCaptureFailure(ctx, chatID, name, err)
 		return
 	}
 
-	stopTyping()
+	visible, err := b.runner.CapturePane(name, visiblePaneOnly)
+	if err != nil {
+		b.reportCaptureFailure(ctx, chatID, name, err)
+		return
+	}
+	if menu, isMenu := ParseMenu(visible); isMenu {
+		b.replyWithMenu(ctx, chatID, menu)
+		return
+	}
 
 	produced, ok := TailAfterPrompt(after, text)
 	if !ok {
 		produced = DiffTail(before, after)
-	}
-
-	if menu, isMenu := ParseMenu(after); isMenu {
-		b.replyWithMenu(ctx, chatID, menu)
-		return
 	}
 
 	reply, rawFallback := FormatReply(produced)
@@ -285,6 +316,10 @@ func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name st
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+}
+
+func (b *Bridge) watchVisible(name string) CaptureFunc {
+	return func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
 }
 
 func (b *Bridge) handleDocument(ctx context.Context, chatID int64, doc *telegram.Document) {
