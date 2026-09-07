@@ -100,7 +100,7 @@ func (c *Client) callOnce(ctx context.Context, method string, form url.Values) (
 	endpoint := fmt.Sprintf("%s/bot%s/%s", c.apiBase, c.token, method)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBufferString(form.Encode()))
 	if err != nil {
-		return nil, 0, fmt.Errorf("build request for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("build request for %s: %w", method, redact(err))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
@@ -115,18 +115,18 @@ func (c *Client) do(req *http.Request, method string) (json.RawMessage, error) {
 func (c *Client) doWithRetryHint(req *http.Request, method string) (json.RawMessage, time.Duration, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("call %s: %w", method, err)
+		return nil, 0, fmt.Errorf("call %s: %w", method, redact(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read response body for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("read response body for %s: %w", method, redact(err))
 	}
 
 	var parsed apiResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, 0, fmt.Errorf("decode response for %s: %w", method, err)
+		return nil, 0, fmt.Errorf("decode response for %s: %w", method, redact(err))
 	}
 	if !parsed.OK {
 		return nil, parsed.retryAfter(), fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
@@ -181,12 +181,12 @@ func (c *Client) DownloadFile(ctx context.Context, filePath, destPath string) er
 	downloadURL := fmt.Sprintf("%s/file/bot%s/%s", c.apiBase, c.token, filePath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return fmt.Errorf("build download request: %w", err)
+		return fmt.Errorf("build download request: %w", redact(err))
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("download file: %w", err)
+		return fmt.Errorf("download file: %w", redact(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -238,7 +238,7 @@ func (c *Client) SendDocument(ctx context.Context, chatID int64, localPath strin
 	endpoint := fmt.Sprintf("%s/bot%s/sendDocument", c.apiBase, c.token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
-		return fmt.Errorf("build sendDocument request: %w", err)
+		return fmt.Errorf("build sendDocument request: %w", redact(err))
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
