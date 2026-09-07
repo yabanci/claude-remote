@@ -39,7 +39,7 @@ func TestSendMessageRetriesOnRateLimit(t *testing.T) {
 		telegram.WithBaseURL(server.URL),
 		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
 
-	err := client.SendMessage(context.Background(), 42, "длинный ответ")
+	err := client.Send(context.Background(), 42, "длинный ответ", telegram.SendOptions{})
 
 	require.NoError(t, err, "a 429 must be retried, not dropped")
 	assert.Equal(t, 2, *attempts)
@@ -55,7 +55,7 @@ func TestSendMessageGivesUpAfterMaxRetries(t *testing.T) {
 		telegram.WithBaseURL(server.URL),
 		telegram.WithRetryPolicy(2, func(time.Duration) {}))
 
-	err := client.SendMessage(context.Background(), 42, "текст")
+	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
 	require.Error(t, err)
 	assert.Equal(t, 3, *attempts, "initial attempt plus two retries")
@@ -70,7 +70,7 @@ func TestNonRateLimitErrorIsNotRetried(t *testing.T) {
 		telegram.WithBaseURL(server.URL),
 		telegram.WithRetryPolicy(3, func(time.Duration) {}))
 
-	err := client.SendMessage(context.Background(), 42, "текст")
+	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
 	require.Error(t, err)
 	assert.Equal(t, 1, *attempts, "a 400 is permanent, retrying only wastes time")
@@ -90,7 +90,7 @@ func TestRateLimitWaitIsCapped(t *testing.T) {
 		telegram.WithBaseURL(server.URL),
 		telegram.WithRetryPolicy(2, func(d time.Duration) { slept = append(slept, d) }))
 
-	require.NoError(t, client.SendMessage(context.Background(), 42, "текст"))
+	require.NoError(t, client.Send(context.Background(), 42, "текст", telegram.SendOptions{}))
 	require.Len(t, slept, 1)
 	assert.LessOrEqual(t, slept[0], 60*time.Second, "an absurd retry_after must be capped")
 }
@@ -109,7 +109,7 @@ func TestRateLimitWithoutRetryAfterStillWaits(t *testing.T) {
 		telegram.WithBaseURL(server.URL),
 		telegram.WithRetryPolicy(2, func(d time.Duration) { slept = append(slept, d) }))
 
-	require.NoError(t, client.SendMessage(context.Background(), 42, "текст"))
+	require.NoError(t, client.Send(context.Background(), 42, "текст", telegram.SendOptions{}))
 	require.Len(t, slept, 1)
 	assert.Greater(t, slept[0], time.Duration(0), "a 429 without retry_after should still back off")
 }

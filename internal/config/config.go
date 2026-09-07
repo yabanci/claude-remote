@@ -37,6 +37,8 @@ type SettleConfig struct {
 
 type Config struct {
 	BotToken       string                   `yaml:"bot_token"`
+	APIBase        string                   `yaml:"api_base"`
+	MaxRetries     int                      `yaml:"max_retries"`
 	AllowedUsers   []int64                  `yaml:"allowed_users"`
 	DefaultSession string                   `yaml:"default_session"`
 	Sessions       map[string]SessionConfig `yaml:"sessions"`
