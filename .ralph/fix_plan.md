@@ -101,13 +101,15 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   Give `execRunner` the same `context.WithTimeout` treatment tmux uses. Test with a fake
   runner/command that never returns, proving the caller gets an error instead of hanging.
 
-- [ ] **Log offset-file read failures that aren't "file missing".** `offsetStore.load()`
-  returns `0` with no log line when `os.ReadFile` fails for any reason other than the file
-  not existing — the sibling `ParseInt` failure branch three lines below does log a
-  warning, this one doesn't. A permission or I/O error on `offset.txt` silently resets the
-  bridge to redeliver Telegram's entire retained update history with zero trace in the
-  logs. Add the same `s.log.Warn` treatment. Test the read-error path asserting the
-  warning is logged.
+- [x] **Log offset-file read failures that aren't "file missing".** `offsetStore.load()`
+  returned `0` with no log line when `os.ReadFile` failed for any reason other than the
+  file not existing — the sibling `ParseInt` failure branch three lines below already
+  logged a warning, this one didn't. A permission or I/O error on `offset.txt` silently
+  reset the bridge to redeliver Telegram's entire retained update history with zero trace
+  in the logs. `load()` now checks `os.IsNotExist` and only stays silent for that case;
+  every other read error gets the same `s.log.Warn` treatment as the parse-failure branch.
+  Tested the missing-file path stays silent and a non-missing read error (offset.txt
+  replaced by a directory) logs the warning.
 
 - [ ] **Route `/cr_peek` capture failures through `reportCaptureFailure`.** `cmdPeek`
   hand-rolls its own capture-error reply instead of calling the shared

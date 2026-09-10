@@ -22,6 +22,9 @@ func newOffsetStore(stateDir string, log *slog.Logger) *offsetStore {
 func (s *offsetStore) load() int64 {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			s.log.Warn("offset file read failed, starting from scratch", "path", s.path, "err", err)
+		}
 		return 0
 	}
 	offset, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)

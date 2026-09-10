@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"os"
@@ -39,4 +40,25 @@ func TestOffsetStoreSaveReplacesExistingContentWholesale(t *testing.T) {
 	store.save(7)
 
 	assert.Equal(t, int64(7), store.load())
+}
+
+func TestOffsetStoreLoadMissingFileIsSilent(t *testing.T) {
+	dir := t.TempDir()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	store := newOffsetStore(dir, logger)
+
+	assert.Equal(t, int64(0), store.load())
+	assert.Empty(t, buf.String(), "a missing offset file on first run is normal, not worth a log line")
+}
+
+func TestOffsetStoreLoadWarnsOnNonMissingReadError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "offset.txt"), 0o700))
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	store := newOffsetStore(dir, logger)
+
+	assert.Equal(t, int64(0), store.load())
+	assert.Contains(t, buf.String(), "offset file read failed")
 }
