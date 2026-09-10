@@ -156,6 +156,38 @@ func TestCrSendResolvesPathRelativeToSessionDir(t *testing.T) {
 	assert.Empty(t, h.tg.messages())
 }
 
+func TestCrSendRejectsAbsolutePathOutsideSessionDir(t *testing.T) {
+	h := newHarness(t)
+
+	h.send("/cr_send /etc/hosts")
+
+	assert.Contains(t, h.lastMessage(), "выходит за пределы")
+	assert.Empty(t, h.tg.documents())
+}
+
+func TestCrSendRejectsPathTraversal(t *testing.T) {
+	h := newHarness(t)
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("body"), 0o600))
+	rel, err := filepath.Rel(h.sessionDir("main"), filepath.Join(outside, "secret.txt"))
+	require.NoError(t, err)
+
+	h.send("/cr_send " + rel)
+
+	assert.Contains(t, h.lastMessage(), "выходит за пределы")
+	assert.Empty(t, h.tg.documents())
+}
+
+func TestCrSendAllowsAbsolutePathInsideSessionDir(t *testing.T) {
+	h := newHarness(t)
+	dir := h.sessionDir("main")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "report.txt"), []byte("body"), 0o600))
+
+	h.send("/cr_send " + filepath.Join(dir, "report.txt"))
+
+	assert.Equal(t, []string{"report.txt"}, h.tg.documents())
+}
+
 func TestCrKillRefusesSessionsTheBridgeDoesNotOwn(t *testing.T) {
 	h := newHarness(t)
 	require.NoError(t, h.runner.Start("personal-work", t.TempDir(), "vim"))

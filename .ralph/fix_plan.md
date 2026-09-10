@@ -83,14 +83,15 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   anything outside `[A-Za-z0-9_-]`) and reply with a clear error instead of a
   partially-created broken session. Test with a name containing `:`.
 
-- [ ] **Fix path traversal in `/cr_send`.** `cmdSend` only special-cases absolute paths and
-  otherwise joins onto the session dir with no `filepath.Clean` or containment check —
+- [x] **Fix path traversal in `/cr_send`.** `cmdSend` only special-cased absolute paths and
+  otherwise joined onto the session dir with no `filepath.Clean` or containment check, so
   `/cr_send /etc/hosts` and `/cr_send ../../.ssh/id_rsa` both read files outside the
-  session's working directory. Clean the path, resolve it relative to the session dir, and
-  refuse (with a clear reply) anything that resolves outside that directory. Also fix the
-  command's description in `commandMenu`/`/cr_help`, which currently says "file from the
-  working directory" without saying that's an enforced boundary. Test both an absolute
-  path and a `../` traversal are rejected.
+  session's working directory. Added `resolveSendPath`: cleans the argument, resolves it
+  against the session dir (absolute args are taken as-is, relative ones joined first), then
+  rejects anything whose path relative to the session dir is `..` or starts with `../`.
+  Absolute paths that do resolve inside the session dir still work. Updated the
+  `commandMenu`/`/cr_help` description to say the boundary is enforced. Tested an absolute
+  path outside the dir, a `../` traversal, and an absolute path inside the dir.
 
 - [ ] **Add a timeout to every `internal/service` shell-out.** `execRunner.Run`/
   `CombinedOutput` call plain `exec.Command` with no context or timeout — unlike every

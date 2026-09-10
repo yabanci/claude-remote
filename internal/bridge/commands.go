@@ -22,7 +22,7 @@ func commandMenu() []telegram.BotCommand {
 		{Command: "cr_restart", Description: "перезапустить сессию: /cr_restart [имя]"},
 		{Command: "cr_interrupt", Description: "Ctrl-C в текущей сессии"},
 		{Command: "cr_peek", Description: "показать экран сессии, ничего в неё не отправляя"},
-		{Command: "cr_send", Description: "прислать файл из рабочей директории: /cr_send <путь>"},
+		{Command: "cr_send", Description: "прислать файл из рабочей директории сессии, за её пределы — запрет: /cr_send <путь>"},
 		{Command: "cr_help", Description: "список команд"},
 	}
 }
@@ -224,9 +224,10 @@ func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {
 		return
 	}
 
-	path := arg
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(s.dir, path)
+	path, err := resolveSendPath(s.dir, arg)
+	if err != nil {
+		b.reply(ctx, chatID, err.Error())
+		return
 	}
 	if _, err := os.Stat(path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("файл не найден: %s", path))
@@ -235,6 +236,19 @@ func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {
 	if err := b.tg.SendDocument(ctx, chatID, path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить файл: %v", err))
 	}
+}
+
+func resolveSendPath(sessionDir, arg string) (string, error) {
+	base := filepath.Clean(sessionDir)
+	target := filepath.Clean(arg)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	rel, err := filepath.Rel(base, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("путь %q выходит за пределы рабочей директории сессии", arg)
+	}
+	return target, nil
 }
 
 func (b *Bridge) cmdHelp(ctx context.Context, chatID int64) {
