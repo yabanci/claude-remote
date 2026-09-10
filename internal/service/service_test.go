@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func platformCases() []platformCase {
 			platform:    systemd{},
 			unitRelPath: []string{".config", "systemd", "user", "claude-remote.service"},
 			tool:        "systemctl",
-			mustContain: "ExecStart=/usr/local/bin/claude-remote run",
+			mustContain: `ExecStart="/usr/local/bin/claude-remote" run`,
 		},
 	}
 }
@@ -307,4 +308,30 @@ func TestLaunchdLogsGoToTheLogsDirectory(t *testing.T) {
 	assert.NotContains(t, string(data), filepath.Join(home, "Library", "LaunchAgents", "claude-remote.err.log"),
 		"logs do not belong in the agents directory")
 	assert.DirExists(t, filepath.Join(home, "Library", "Logs", "claude-remote"))
+}
+
+func TestLaunchdRenderEscapesXMLSpecialCharacters(t *testing.T) {
+	out := launchd{}.render("/opt/a & b/claude-remote", "/var/log/a&b", "/usr/bin:/bin")
+
+	assert.Contains(t, out, "/opt/a &amp; b/claude-remote")
+	assert.NotContains(t, out, "/opt/a & b/claude-remote",
+		"a raw & inside a <string> element breaks plist XML parsing")
+
+	var doc struct {
+		XMLName xml.Name `xml:"plist"`
+	}
+	require.NoError(t, xml.Unmarshal([]byte(out), &doc), "rendered plist must be well-formed XML")
+}
+
+func TestSystemdRenderQuotesPathsWithSpaces(t *testing.T) {
+	out := systemd{}.render("/opt/a path/claude-remote", "", "/usr/bin:/bin")
+
+	assert.Contains(t, out, `ExecStart="/opt/a path/claude-remote" run`,
+		"an unquoted space in execPath would split systemd's ExecStart into two arguments")
+}
+
+func TestSystemdRenderEscapesEmbeddedQuotes(t *testing.T) {
+	out := systemd{}.render(`/opt/weird"path/claude-remote`, "", "/usr/bin:/bin")
+
+	assert.Contains(t, out, `ExecStart="/opt/weird\"path/claude-remote" run`)
 }

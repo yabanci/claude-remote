@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -52,7 +55,16 @@ func (launchd) logDir() (string, error) {
 }
 
 func (launchd) render(execPath, logDir, searchPath string) string {
-	return fmt.Sprintf(launchdTemplate, launchdLabel, execPath, searchPath, logDir, logDir)
+	return fmt.Sprintf(launchdTemplate, launchdLabel,
+		xmlEscape(execPath), xmlEscape(searchPath), xmlEscape(logDir), xmlEscape(logDir))
+}
+
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	if err := xml.EscapeText(&buf, []byte(s)); err != nil {
+		return s
+	}
+	return buf.String()
 }
 
 func (launchd) enable(runner CommandRunner, unitPath string) error {
@@ -92,7 +104,17 @@ func (systemd) logDir() (string, error) {
 }
 
 func (systemd) render(execPath, _, searchPath string) string {
-	return fmt.Sprintf(systemdTemplate, searchPath, execPath)
+	return fmt.Sprintf(systemdTemplate, systemdEnv("PATH", searchPath), systemdArg(execPath))
+}
+
+var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+func systemdArg(s string) string {
+	return `"` + systemdEscaper.Replace(s) + `"`
+}
+
+func systemdEnv(key, value string) string {
+	return `"` + key + "=" + systemdEscaper.Replace(value) + `"`
 }
 
 func (systemd) enable(runner CommandRunner, _ string) error {
@@ -156,7 +178,7 @@ const systemdTemplate = `[Unit]
 Description=claude-remote Telegram bridge
 
 [Service]
-Environment="PATH=%s"
+Environment=%s
 ExecStart=%s run
 Restart=on-failure
 RestartSec=5

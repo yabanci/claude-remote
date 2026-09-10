@@ -208,13 +208,19 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `/cr_status@mybot` falls through to "unknown command". Strip a trailing `@<name>` from
   the command token before the switch. Test with a command carrying the suffix.
 
-- [ ] **Escape untrusted values in the launchd/systemd templates.** `launchd.render`/
-  `systemd.render` interpolate `execPath`/`logDir`/config path via raw `fmt.Sprintf` with
-  no escaping: the launchd template places them inside XML `<string>` tags (a `&`/`<`/`>`
-  in a path breaks the plist), and the systemd template places `execPath` unquoted into
-  `ExecStart=%s run` (a space in the path breaks systemd's argument parsing). XML-escape
-  for the plist template; quote for the systemd unit. Test both with a path containing a
-  space and, for launchd, a path containing `&`.
+- [x] **Escape untrusted values in the launchd/systemd templates.** `launchd.render`/
+  `systemd.render` interpolated `execPath`/`logDir`/`searchPath` via raw `fmt.Sprintf` with
+  no escaping: the launchd template placed them inside XML `<string>` tags (a `&`/`<`/`>`
+  in a path broke the plist), and the systemd template placed `execPath` unquoted into
+  `ExecStart=%s run` (a space in the path split it into two arguments). Added `xmlEscape`
+  (wraps `xml.EscapeText`), applied to `execPath`/`searchPath`/`logDir` in `launchd.render`.
+  Added `systemdArg`/`systemdEnv` (quote plus backslash/`"` escaping), applied to `execPath`
+  in `ExecStart=` and to the `PATH` assignment in `Environment=`; the systemd template no
+  longer hardcodes its own quotes since the helpers now own them. Updated the existing
+  `mustContain` fixture for the now-quoted `ExecStart=` line. Tested a launchd path with an
+  embedded `&` and space (escaped output plus `xml.Unmarshal` proving the rendered plist is
+  well-formed), a systemd path with a space (still one argument), and a systemd path with an
+  embedded `"` (escaped, not closing the quote early).
 
 - [ ] **Make `elapsed` in `WaitForSettle` reflect real wall-clock time.** `elapsed` is
   incremented by the fixed `pollInterval` before `capture()` runs each round; `capture()`'s
