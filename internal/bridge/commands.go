@@ -150,10 +150,21 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 	b.activeSession[chatID] = name
 
 	if err := b.runner.Start(name, dir, "claude"); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия создана в конфиге, но не запустилась: %v", err))
+		b.rollbackNewSession(chatID, name)
+		b.reply(ctx, chatID, fmt.Sprintf("сессия не запустилась, откатываю конфиг: %v", err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
+}
+
+func (b *Bridge) rollbackNewSession(chatID int64, name string) {
+	delete(b.cfg.Sessions, name)
+	if err := config.Save(b.configPath, b.cfg); err != nil {
+		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "err", err)
+	}
+	if b.activeSession[chatID] == name {
+		delete(b.activeSession, chatID)
+	}
 }
 
 func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {

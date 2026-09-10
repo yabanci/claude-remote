@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yabanci/claude-remote/internal/bridge"
+	"github.com/yabanci/claude-remote/internal/config"
 	"github.com/yabanci/claude-remote/internal/telegram"
 )
 
@@ -92,6 +93,26 @@ func TestCrKillReportsFailure(t *testing.T) {
 	h.send("/cr_kill")
 
 	assert.Contains(t, h.lastMessage(), "не удалось остановить")
+}
+
+func TestCrNewRollsBackConfigEntryWhenStartFails(t *testing.T) {
+	cfg := testConfigFor(t)
+	runner := &failingRunner{fakeRunner: newFakeRunner(), startErr: errors.New("no such directory")}
+	h := newHarnessWithRunner(t, cfg, runner)
+	projectDir := t.TempDir()
+
+	h.send("/cr_new work " + projectDir)
+
+	assert.Contains(t, h.lastMessage(), "не запустилась")
+	assert.False(t, runner.Exists("work"))
+
+	saved, err := config.Load(h.configPath)
+	require.NoError(t, err)
+	_, exists := saved.Sessions["work"]
+	assert.False(t, exists, "a session whose Start failed must not stay in the saved config")
+
+	h.send("/cr_status")
+	assert.NotContains(t, h.lastMessage(), "work", "a rolled-back session must not still be the active one")
 }
 
 type offsetAwareTelegram struct {
