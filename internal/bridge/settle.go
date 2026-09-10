@@ -7,6 +7,8 @@ import (
 	"github.com/yabanci/claude-remote/internal/config"
 )
 
+const scrollbackEvictedReply = "ответ недоступен — экран сессии прокрутился дальше истории, посмотри /cr_peek"
+
 func DiffTail(before, after string) string {
 	beforeLines := strings.Split(before, "\n")
 	afterLines := strings.Split(after, "\n")
@@ -15,7 +17,15 @@ func DiffTail(before, after string) string {
 	for common < len(beforeLines) && common < len(afterLines) && beforeLines[common] == afterLines[common] {
 		common++
 	}
+
+	if scrollbackLikelyEvicted(common, beforeLines, afterLines) {
+		return scrollbackEvictedReply
+	}
 	return strings.TrimSpace(strings.Join(afterLines[common:], "\n"))
+}
+
+func scrollbackLikelyEvicted(common int, beforeLines, afterLines []string) bool {
+	return common == 0 && len(beforeLines) >= captureHistoryLines && len(afterLines) >= captureHistoryLines
 }
 
 type CaptureFunc func() (string, error)

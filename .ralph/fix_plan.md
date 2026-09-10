@@ -226,17 +226,22 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `run()`. Thread `stdout` into `cmdService` and use it. Test by asserting on the captured
   buffer the way `main_test.go`'s other `TestRun*` cases already do.
 
-- [ ] **Fix `DiffTail`'s scrollback-eviction case.** `DiffTail`'s common-prefix walk assumes
+- [x] **Fix `DiffTail`'s scrollback-eviction case.** `DiffTail`'s common-prefix walk assumed
   the "before" and "after" pane captures start at the same line; once tmux's bounded
   history (`history-limit` 5000, equal to `captureHistoryLines`) evicts lines between the
   two captures — routine for any session that's been running a while — the common prefix
-  collapses to zero and the *entire* captured pane (up to 5000 lines of already-seen
-  conversation) gets sent back to the user as if it were the new reply. This path is only
-  reached when `TailAfterPrompt` can't find the echoed prompt line, so make it defensive:
-  if `DiffTail` can't establish a meaningful common prefix, don't return the whole
-  capture — cap what it returns, or fall back to a "reply unavailable, screen scrolled too
-  far — check /cr_peek" message. Test the eviction scenario directly against `DiffTail`
-  with fixture captures that share no common prefix.
+  collapsed to zero and the *entire* captured pane (up to 5000 lines of already-seen
+  conversation) got sent back to the user as if it were the new reply. This path is only
+  reached when `TailAfterPrompt` can't find the echoed prompt line. Added
+  `scrollbackLikelyEvicted`: when the common prefix is zero *and* both captures are at
+  least `captureHistoryLines` long (the signal that the history buffer was already near
+  its cap, so eviction is plausible rather than "brand new session with nothing in
+  common"), `DiffTail` now returns a "screen scrolled too far — check /cr_peek" message
+  instead of the raw capture. A short pane with zero common prefix (session genuinely has
+  nothing in common, buffer not yet full) still returns the whole new content as before.
+  Tested both the eviction fallback (5000-line fixtures, no common prefix) and the
+  not-yet-full case (10-line fixtures, no common prefix) to confirm the heuristic doesn't
+  fire on a normal short session.
 
 - [ ] **Cover `ensureRunning`'s cold-start failure branches.** No test exercises `Start()`
   failing or `WaitForSettle()` failing/timing out right after a fresh `Start()` — every

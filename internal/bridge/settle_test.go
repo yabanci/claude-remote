@@ -3,6 +3,7 @@ package bridge_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,33 @@ func TestDiffTail(t *testing.T) {
 			assert.Equal(t, tc.want, bridge.DiffTail(tc.before, tc.after))
 		})
 	}
+}
+
+func TestDiffTailFallsBackWhenScrollbackWasEvicted(t *testing.T) {
+	before := fullHistoryPane("before line", 5000)
+	after := fullHistoryPane("after line", 5000)
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Contains(t, got, "/cr_peek")
+	assert.NotContains(t, got, "after line")
+}
+
+func TestDiffTailReturnsWholeCaptureWhenHistoryIsNotYetFull(t *testing.T) {
+	before := fullHistoryPane("before line", 10)
+	after := fullHistoryPane("after line", 10)
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, after, got)
+}
+
+func fullHistoryPane(linePrefix string, lines int) string {
+	rows := make([]string, lines)
+	for i := range rows {
+		rows[i] = fmt.Sprintf("%s %d", linePrefix, i)
+	}
+	return strings.Join(rows, "\n")
 }
 
 func sequenceCapture(values []string) bridge.CaptureFunc {
