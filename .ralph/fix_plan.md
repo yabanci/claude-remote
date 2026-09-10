@@ -128,14 +128,17 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `max_retries`). Test that a transient 500 and a simulated network error both get retried
   and eventually succeed.
 
-- [ ] **Make `Config.Save` and the offset store's write atomic.** Both write in place via a
-  single `os.WriteFile` with no temp-file-plus-rename. A crash or power loss mid-write can
+- [x] **Make `Config.Save` and the offset store's write atomic.** Both wrote in place via a
+  single `os.WriteFile` with no temp-file-plus-rename. A crash or power loss mid-write could
   leave a truncated, unparseable `config.yaml` (losing the bot token and allowlist — the
   bridge won't start) or a truncated `offset.txt` (parses as garbage, resets to offset 0,
-  replays already-handled updates). Write to a temp file in the same directory and
-  `os.Rename` over the target in both places. Test that the target file's content is
-  either fully the old version or fully the new version, never a partial write, and that
-  the rename lands with the right permissions (`0600`).
+  replays already-handled updates). Added `internal/atomicfile.Write` — writes to a temp
+  file in the target's directory, `fsync`s, `chmod`s to the requested permission, then
+  `os.Rename`s over the target, removing the temp file if any step before the rename fails.
+  Wired it into both `config.Save` and `offsetStore.save`. Tested `atomicfile.Write` directly
+  (content, permissions, no leftover temp file on success, no partial file when the target
+  dir is missing, original untouched when the rename itself fails) and tested both call
+  sites for wholesale replacement and correct final permissions.
 
 - [ ] **Propagate the real error from `service uninstall`.** Both `launchd.disable()` and
   `systemd.disable()` discard the error from the command that actually stops the service

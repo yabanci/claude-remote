@@ -92,6 +92,38 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, cfg.Settle, loaded.Settle)
 }
 
+func TestSaveWritesAtomicallyNoTempFileLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := config.Default()
+	cfg.BotToken = "abc123"
+	require.NoError(t, config.Save(path, cfg))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only config.yaml should remain, no leftover temp file")
+	assert.Equal(t, "config.yaml", entries[0].Name())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestSaveReplacesExistingConfigWholesale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("a very long stale config body that must not survive a save"), 0o600))
+
+	cfg := config.Default()
+	cfg.BotToken = "fresh-token"
+	require.NoError(t, config.Save(path, cfg))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "stale config body")
+}
+
 func TestApplySettleDefaultsOnPartialConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

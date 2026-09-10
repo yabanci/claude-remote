@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/yabanci/claude-remote/internal/atomicfile"
 )
 
 type offsetStore struct {
@@ -35,7 +37,7 @@ func (s *offsetStore) save(offset int64) {
 		s.log.Error("create state dir failed", "path", filepath.Dir(s.path), "err", err)
 		return
 	}
-	if err := os.WriteFile(s.path, []byte(strconv.FormatInt(offset, 10)), 0o600); err != nil {
+	if err := atomicfile.Write(s.path, []byte(strconv.FormatInt(offset, 10)), 0o600); err != nil {
 		s.log.Error("save offset failed", "path", s.path, "err", err)
 	}
 }
