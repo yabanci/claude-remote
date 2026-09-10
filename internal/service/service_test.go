@@ -19,8 +19,10 @@ type call struct {
 }
 
 type fakeRunner struct {
-	calls  []call
-	failOn string
+	calls        []call
+	failOn       string
+	statusOutput []byte
+	statusErr    error
 }
 
 func (f *fakeRunner) Run(name string, args ...string) error {
@@ -33,6 +35,9 @@ func (f *fakeRunner) Run(name string, args ...string) error {
 
 func (f *fakeRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, call{name, args})
+	if f.statusOutput != nil || f.statusErr != nil {
+		return f.statusOutput, f.statusErr
+	}
 	if name == f.failOn {
 		return nil, fmt.Errorf("simulated failure for %s", name)
 	}
@@ -158,18 +163,85 @@ func TestStatusReportsNotInstalledWhenToolFails(t *testing.T) {
 	}
 }
 
-func TestStatusReturnsToolOutput(t *testing.T) {
-	for _, tc := range platformCases() {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+func TestLaunchdStatusReportsRunningWithPID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 0;
+	"PID" = 4242;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
 
-			status, err := mgr.Status()
+	status, err := mgr.Status()
 
-			require.NoError(t, err)
-			assert.Equal(t, "running", status)
-		})
-	}
+	require.NoError(t, err)
+	assert.Contains(t, status, `"PID" = 4242`)
+}
+
+func TestLaunchdStatusReportsStoppedWhenLastExitStatusIsZero(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 0;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusStopped, status)
+}
+
+func TestLaunchdStatusReportsFailedWhenLastExitStatusIsNonZero(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 1;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusFailed, status)
+	assert.NotEqual(t, statusNotInstalled, status)
+}
+
+func TestSystemdStatusReportsActiveState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("active\n")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, "active", status)
+}
+
+func TestSystemdStatusReportsFailedDistinctFromNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("failed\n"), statusErr: fmt.Errorf("exit status 3")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusFailed, status)
+	assert.NotEqual(t, statusNotInstalled, status)
+}
+
+func TestSystemdStatusReportsStoppedWhenInactive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("inactive\n"), statusErr: fmt.Errorf("exit status 3")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusStopped, status)
 }
 
 func TestInstallPropagatesEnableFailure(t *testing.T) {

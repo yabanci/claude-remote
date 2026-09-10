@@ -86,7 +86,30 @@ func (launchd) status(runner CommandRunner) (string, error) {
 	if err != nil {
 		return statusNotInstalled, nil
 	}
-	return string(out), nil
+	text := string(out)
+	if strings.Contains(text, `"PID"`) {
+		return text, nil
+	}
+	if launchdLastExitStatusNonZero(text) {
+		return statusFailed, nil
+	}
+	return statusStopped, nil
+}
+
+func launchdLastExitStatusNonZero(text string) bool {
+	_, afterKey, found := strings.Cut(text, `"LastExitStatus"`)
+	if !found {
+		return false
+	}
+	_, afterEquals, found := strings.Cut(afterKey, "=")
+	if !found {
+		return false
+	}
+	if end := strings.IndexAny(afterEquals, ";\n"); end != -1 {
+		afterEquals = afterEquals[:end]
+	}
+	value := strings.TrimSpace(afterEquals)
+	return value != "" && value != "0"
 }
 
 type systemd struct{}
@@ -140,10 +163,18 @@ func (systemd) disable(runner CommandRunner, _ string) error {
 
 func (systemd) status(runner CommandRunner) (string, error) {
 	out, err := runner.CombinedOutput("systemctl", "--user", "is-active", systemdUnit)
-	if err != nil {
+	state := strings.TrimSpace(string(out))
+	if err == nil {
+		return state, nil
+	}
+	switch state {
+	case "failed":
+		return statusFailed, nil
+	case "inactive":
+		return statusStopped, nil
+	default:
 		return statusNotInstalled, nil
 	}
-	return string(out), nil
 }
 
 const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>

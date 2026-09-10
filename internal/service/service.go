@@ -13,6 +13,8 @@ import (
 
 const (
 	statusNotInstalled = "not installed"
+	statusFailed       = "failed"
+	statusStopped      = "stopped"
 	commandTimeout     = 10 * time.Second
 )
 

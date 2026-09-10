@@ -162,14 +162,23 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   file that still reflects reality. Tested both platforms with a fake runner that fails the
   unload/disable step: error is returned and names the failing tool, unit file survives.
 
-- [ ] **Make `service status` distinguish "not installed" from "installed but failed".**
-  Both `systemd.status()` and `launchd.status()` collapse *any* non-nil error from the
+- [x] **Make `service status` distinguish "not installed" from "installed but failed".**
+  Both `systemd.status()` and `launchd.status()` collapsed *any* non-nil error from the
   underlying status command into the fixed string "not installed", discarding what the
-  tool actually said (e.g. a legitimately failed/crashed unit). Parse the actual state
-  where possible (`systemctl is-active` exit codes distinguish inactive/failed/unknown;
-  `launchctl list` output can be inspected) and report "failed"/"stopped" distinctly from
-  "not installed". Test with a fake runner returning a "failed" status specifically,
-  asserting the report differs from the not-installed case.
+  tool actually said (e.g. a legitimately failed/crashed unit). `systemd.status` now reads
+  `systemctl is-active`'s own output: "failed" and "inactive" get their own `statusFailed`/
+  `statusStopped` results instead of collapsing into `statusNotInstalled`; only a genuinely
+  unrecognized state (or `is-active` erroring with no usable text) still means "not
+  installed". `launchd.status` now inspects `launchctl list`'s plist-ish output: a `"PID"`
+  key means running (returns the raw text as before), otherwise a non-zero
+  `"LastExitStatus"` means `statusFailed` and a zero one means `statusStopped`. Fixing this
+  broke `TestStatusReturnsToolOutput`, which asserted launchd passed arbitrary tool output
+  straight through — that assumption no longer holds now that the output is parsed;
+  replaced it with six platform-specific tests (`TestLaunchdStatusReportsRunningWithPID`,
+  `...StoppedWhenLastExitStatusIsZero`, `...FailedWhenLastExitStatusIsNonZero`,
+  `TestSystemdStatusReportsActiveState`, `...FailedDistinctFromNotInstalled`,
+  `...StoppedWhenInactive`) covering both platforms' running/stopped/failed/not-installed
+  outcomes.
 
 - [ ] **Roll back `/cr_new`'s config entry when `Start` fails.** `cmdNew` writes the new
   session into `b.cfg.Sessions`, saves the config, and marks it active *before* calling
