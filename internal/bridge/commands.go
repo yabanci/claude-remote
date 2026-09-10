@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,12 +13,14 @@ import (
 	"github.com/yabanci/claude-remote/internal/telegram"
 )
 
+var validSessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 func commandMenu() []telegram.BotCommand {
 	return []telegram.BotCommand{
 		{Command: "cr_status", Description: "статус текущей и всех сессий"},
 		{Command: "cr_sessions", Description: "список сессий"},
 		{Command: "cr_use", Description: "переключиться на сессию: /cr_use <имя>"},
-		{Command: "cr_new", Description: "создать сессию: /cr_new <имя> <путь>"},
+		{Command: "cr_new", Description: "создать сессию: /cr_new <имя> <путь>, имя — только буквы/цифры/_/-"},
 		{Command: "cr_kill", Description: "остановить сессию: /cr_kill [имя]"},
 		{Command: "cr_restart", Description: "перезапустить сессию: /cr_restart [имя]"},
 		{Command: "cr_interrupt", Description: "Ctrl-C в текущей сессии"},
@@ -113,6 +116,11 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 		return
 	}
 	name, rawDir := parts[0], strings.TrimSpace(parts[1])
+
+	if !validSessionName.MatchString(name) {
+		b.reply(ctx, chatID, fmt.Sprintf("недопустимое имя сессии %q: разрешены только буквы, цифры, `_` и `-`", name))
+		return
+	}
 
 	if _, exists := b.cfg.Sessions[name]; exists {
 		b.reply(ctx, chatID, fmt.Sprintf("сессия %q уже существует, используй /cr_use", name))

@@ -75,13 +75,14 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   Test: a fake runner whose capture blocks until released, prove `/cr_interrupt` is
   delivered and acted on while the first message is still in flight.
 
-- [ ] **Reject tmux-unsafe session names in `/cr_new`.** `cmdNew` stores `parts[0]` as the
-  session name with no validation and passes it straight through to every tmux `-t`
-  target. A name containing `:` (tmux's session:window.pane separator) creates a session
-  that can never again be reached, messaged, or killed by the bridge — it silently
-  orphans. Validate the name before creating anything (reject `:`, `.`, whitespace, and
-  anything outside `[A-Za-z0-9_-]`) and reply with a clear error instead of a
-  partially-created broken session. Test with a name containing `:`.
+- [x] **Reject tmux-unsafe session names in `/cr_new`.** `cmdNew` stored `parts[0]` as the
+  session name with no validation and passed it straight through to every tmux `-t`
+  target. A name containing `:` (tmux's session:window.pane separator) created a session
+  that could never again be reached, messaged, or killed by the bridge — it silently
+  orphaned. Added `validSessionName` (`^[A-Za-z0-9_-]+$`), checked before anything is
+  written to config or started in tmux, so a rejected name never gets a partially-created
+  broken session. `/cr_help`'s `/cr_new` description now says what's allowed. Tested with
+  a `:`-containing name: rejected, no tmux session, no config file written.
 
 - [x] **Fix path traversal in `/cr_send`.** `cmdSend` only special-cased absolute paths and
   otherwise joined onto the session dir with no `filepath.Clean` or containment check, so

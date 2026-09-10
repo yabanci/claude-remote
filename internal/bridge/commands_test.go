@@ -50,6 +50,17 @@ func TestCrNewRequiresBothArguments(t *testing.T) {
 	assert.Contains(t, h.lastMessage(), "формат")
 }
 
+func TestCrNewRejectsTmuxUnsafeName(t *testing.T) {
+	h := newHarness(t)
+
+	h.send("/cr_new bad:name " + t.TempDir())
+
+	assert.Contains(t, h.lastMessage(), "недопустимое имя сессии")
+	assert.False(t, h.runner.Exists("bad:name"))
+	_, err := os.Stat(h.configPath)
+	assert.True(t, os.IsNotExist(err), "cmdNew must not persist a session with an unsafe name")
+}
+
 func TestCrKillStopsRunningSession(t *testing.T) {
 	h := newHarness(t).startSession("main")
 
