@@ -210,7 +210,7 @@ func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 
 	pane, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+		b.reportCaptureFailure(ctx, chatID, name, err)
 		return
 	}
 

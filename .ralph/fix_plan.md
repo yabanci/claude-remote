@@ -114,15 +114,15 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   Tested the missing-file path stays silent and a non-missing read error (offset.txt
   replaced by a directory) logs the warning.
 
-- [ ] **Route `/cr_peek` capture failures through `reportCaptureFailure`.** `cmdPeek`
-  hand-rolls its own capture-error reply instead of calling the shared
+- [x] **Route `/cr_peek` capture failures through `reportCaptureFailure`.** `cmdPeek`
+  hand-rolled its own capture-error reply instead of calling the shared
   `reportCaptureFailure` helper every other capture call site
   (`forwardToSession`, `heldBackByOpenDialog`, `sendAndAwait`, `deliverAnswer`) uses. If
-  the session vanishes between `Exists()` and `CapturePane()`, every other command gives
-  the actionable "session vanished, run /cr_restart" message — `/cr_peek` alone gives a
-  raw Go error. Make it call `reportCaptureFailure` like the rest. Test that `/cr_peek`
-  against a runner whose session vanishes mid-call gets the same message as the other
-  commands.
+  the session vanished between `Exists()` and `CapturePane()`, every other command gave
+  the actionable "session vanished, run /cr_restart" message — `/cr_peek` alone gave a
+  raw Go error. Now it calls `reportCaptureFailure` like the rest. Tested with a runner
+  (`vanishesOnCaptureRunner`) whose session vanishes inside `CapturePane`, asserting
+  `/cr_peek` gets the same "пропала … /cr_restart" message as the other commands.
 
 - [ ] **Retry the Telegram client on transport errors and 5xx, not just 429.**
   `Client.call()`'s retry loop only backs off when `retryAfter()` returns a positive wait,
