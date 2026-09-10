@@ -180,14 +180,15 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `...StoppedWhenInactive`) covering both platforms' running/stopped/failed/not-installed
   outcomes.
 
-- [ ] **Roll back `/cr_new`'s config entry when `Start` fails.** `cmdNew` writes the new
-  session into `b.cfg.Sessions`, saves the config, and marks it active *before* calling
-  `runner.Start`. If `Start` fails, the handler only replies with the error — it never
-  removes the session from `b.cfg.Sessions`/re-saves config, leaving a dead entry that
-  `/cr_status`, `/cr_use`, and plain-text routing keep referencing. Delete the entry (and
-  re-save, and clear the active-session pointer if it was set) on a `Start` failure. Test
-  with a runner that fails `Start`, asserting the session no longer appears in the saved
-  config or in `/cr_status` afterward.
+- [x] **Roll back `/cr_new`'s config entry when `Start` fails.** `cmdNew` wrote the new
+  session into `b.cfg.Sessions`, saved the config, and marked it active *before* calling
+  `runner.Start`. If `Start` failed, the handler only replied with the error — it never
+  removed the session from `b.cfg.Sessions`/re-saved config, leaving a dead entry that
+  `/cr_status`, `/cr_use`, and plain-text routing kept referencing. Rolled the config entry
+  (and the active-session pointer, if set) back on a `Start` failure. Tested with a runner
+  that fails `Start`: the session no longer appears in the saved config or as active
+  afterward. (Commit `d03d9f1` — landed manually after ralph's own session left this
+  verified-clean state uncommitted for 8+ stalled iterations; see tooling_ralph_loop.md.)
 
 - [ ] **Cap menu rows and add a text fallback.** `replyWithMenu` puts every option from
   `ParseMenu` into a single unbounded row; with enough options Telegram's own
