@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -214,7 +215,7 @@ func TestNewManagerUsesRealExecRunner(t *testing.T) {
 }
 
 func TestExecRunnerRunsRealCommands(t *testing.T) {
-	r := execRunner{}
+	r := newExecRunner()
 
 	require.NoError(t, r.Run("true"))
 	require.Error(t, r.Run("false"))
@@ -222,6 +223,24 @@ func TestExecRunnerRunsRealCommands(t *testing.T) {
 	out, err := r.CombinedOutput("echo", "hello")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", strings.TrimSpace(string(out)))
+}
+
+func TestExecRunnerRunTimesOutOnAHungCommand(t *testing.T) {
+	r := execRunner{timeout: 50 * time.Millisecond}
+
+	err := r.Run("sleep", "5")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCommandTimeout)
+}
+
+func TestExecRunnerCombinedOutputTimesOutOnAHungCommand(t *testing.T) {
+	r := execRunner{timeout: 50 * time.Millisecond}
+
+	_, err := r.CombinedOutput("sleep", "5")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCommandTimeout)
 }
 
 func TestInstalledServiceCarriesTheSearchPath(t *testing.T) {

@@ -94,12 +94,15 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `commandMenu`/`/cr_help` description to say the boundary is enforced. Tested an absolute
   path outside the dir, a `../` traversal, and an absolute path inside the dir.
 
-- [ ] **Add a timeout to every `internal/service` shell-out.** `execRunner.Run`/
-  `CombinedOutput` call plain `exec.Command` with no context or timeout — unlike every
+- [x] **Add a timeout to every `internal/service` shell-out.** `execRunner.Run`/
+  `CombinedOutput` called plain `exec.Command` with no context or timeout — unlike every
   tmux call, which wraps `exec.CommandContext` in a 5s/15s timeout. A hung
-  `launchctl`/`systemctl` blocks `claude-remote service install|uninstall|status` forever.
-  Give `execRunner` the same `context.WithTimeout` treatment tmux uses. Test with a fake
-  runner/command that never returns, proving the caller gets an error instead of hanging.
+  `launchctl`/`systemctl` blocked `claude-remote service install|uninstall|status`
+  forever. Gave `execRunner` the same `context.WithTimeout` treatment tmux uses: a
+  configurable `timeout` field (defaulting to 10s via `newExecRunner`), `exec.CommandContext`,
+  and `ErrCommandTimeout` returned when the context deadline is what stopped the command.
+  Tested with a real `sleep 5` process and a 50ms timeout on both `Run` and
+  `CombinedOutput`, proving the caller gets `ErrCommandTimeout` instead of hanging.
 
 - [x] **Log offset-file read failures that aren't "file missing".** `offsetStore.load()`
   returned `0` with no log line when `os.ReadFile` failed for any reason other than the

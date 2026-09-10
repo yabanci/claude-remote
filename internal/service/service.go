@@ -1,28 +1,56 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 )
 
-const statusNotInstalled = "not installed"
+const (
+	statusNotInstalled = "not installed"
+	commandTimeout     = 10 * time.Second
+)
+
+var ErrCommandTimeout = errors.New("command did not finish in time")
 
 type CommandRunner interface {
 	Run(name string, args ...string) error
 	CombinedOutput(name string, args ...string) ([]byte, error)
 }
 
-type execRunner struct{}
-
-func (execRunner) Run(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+type execRunner struct {
+	timeout time.Duration
 }
 
-func (execRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
+func newExecRunner() execRunner {
+	return execRunner{timeout: commandTimeout}
+}
+
+func (r execRunner) Run(name string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+
+	err := exec.CommandContext(ctx, name, args...).Run()
+	if ctx.Err() != nil {
+		return fmt.Errorf("%s: %w", name, ErrCommandTimeout)
+	}
+	return err
+}
+
+func (r execRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if ctx.Err() != nil {
+		return out, fmt.Errorf("%s: %w", name, ErrCommandTimeout)
+	}
+	return out, err
 }
 
 type Manager struct {
@@ -34,7 +62,7 @@ type Manager struct {
 }
 
 func NewManager(execPath string) *Manager {
-	return NewManagerWithRunner(execPath, execRunner{})
+	return NewManagerWithRunner(execPath, newExecRunner())
 }
 
 func NewManagerWithRunner(execPath string, runner CommandRunner) *Manager {
