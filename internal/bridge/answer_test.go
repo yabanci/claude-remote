@@ -105,3 +105,12 @@ func TestFormatReplyDoesNotFlagShortChromeOnlyFallback(t *testing.T) {
 func TestExpectedMarkersAreNamedForTheWarning(t *testing.T) {
 	assert.Contains(t, bridge.ExpectedMarkers(), "⏺")
 }
+
+func TestExtractAnswerKeepsProseShapedLikeAFunctionCall(t *testing.T) {
+	pane := "⏺ Filter(x) возвращает true, когда x проходит все условия.\n\n✻ done"
+
+	answer := bridge.ExtractAnswer(pane)
+
+	assert.Equal(t, 0, answer.ToolBlocks)
+	assert.Contains(t, answer.Text, "Filter(x) возвращает true")
+}

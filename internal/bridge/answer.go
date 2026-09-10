@@ -23,11 +23,12 @@ type Answer struct {
 }
 
 func ExtractAnswer(pane string) Answer {
+	lines := strings.Split(pane, "\n")
 	var text []string
 	tools := 0
 	inTextBlock := false
 
-	for _, line := range strings.Split(pane, "\n") {
+	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
 		if isChrome(line) || strings.HasPrefix(trimmed, spinnerMarker) {
@@ -40,7 +41,7 @@ func ExtractAnswer(pane string) Answer {
 
 		if body, found := strings.CutPrefix(trimmed, answerMarker); found {
 			body = strings.TrimSpace(body)
-			if toolCallPattern.MatchString(body) {
+			if toolCallPattern.MatchString(body) && followedByToolResult(lines, i) {
 				tools++
 				inTextBlock = false
 				continue
@@ -59,6 +60,13 @@ func ExtractAnswer(pane string) Answer {
 		Text:       strings.TrimSpace(strings.Join(collapseBlankRuns(text), "\n")),
 		ToolBlocks: tools,
 	}
+}
+
+func followedByToolResult(lines []string, i int) bool {
+	if i+1 >= len(lines) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(lines[i+1]), toolResultMarker)
 }
 
 func stripMarkerGutter(line string) string {

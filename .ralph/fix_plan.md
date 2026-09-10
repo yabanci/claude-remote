@@ -179,14 +179,14 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   that a long-running fake capture triggers at least one interim message via the harness's
   fake Telegram, for both call sites.
 
-- [ ] **Fix the tool-call-detection regex false positive.** `toolCallPattern`
-  (`^[A-Z][A-Za-z]*\(`) matches genuine assistant prose shaped like "Filter(x) returns…" or
+- [x] **Fix the tool-call-detection regex false positive.** `toolCallPattern`
+  (`^[A-Z][A-Za-z]*\(`) matched genuine assistant prose shaped like "Filter(x) returns…" or
   "Update(id) done", not just actual tool-call lines, causing `ExtractAnswer` to drop real
-  answer text and `FormatReply` to report "no text answer" when there was one. Tighten the
-  heuristic so ordinary prose survives — require it to also match the actual TUI markers
-  the tool-call lines carry, not just capitalized-word-then-paren. Test with a fixture
-  line that's real prose shaped like a function call, asserting it's kept in the extracted
-  answer.
+  answer text and `FormatReply` to report "no text answer" when there was one. Real
+  tool-call lines are always immediately followed by a `⎿` result line; prose never is.
+  Added `followedByToolResult`, which `ExtractAnswer` now requires alongside the regex
+  before counting a line as a tool call. Tested with a prose line shaped like a function
+  call — it now survives into the extracted answer with zero tool blocks counted.
 
 - [ ] **Recognize commands sent with an `@botname` suffix.** `handleCommand`'s switch
   compares the first whitespace-separated field against exact literals like
