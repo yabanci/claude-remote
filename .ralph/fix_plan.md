@@ -145,13 +145,18 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   dir is missing, original untouched when the rename itself fails) and tested both call
   sites for wholesale replacement and correct final permissions.
 
-- [ ] **Propagate the real error from `service uninstall`.** Both `launchd.disable()` and
-  `systemd.disable()` discard the error from the command that actually stops the service
-  (`_ = runner.Run(...)`) and `launchd.disable` unconditionally `return nil`s;
-  `systemd.disable` only propagates the later `daemon-reload` error. `claude-remote
-  service uninstall` can print "service uninstalled" while the service is still running.
-  Stop discarding these errors — return them so `Uninstall()` fails loudly. Test both
-  platforms with a fake runner that fails the unload/disable step.
+- [x] **Propagate the real error from `service uninstall`.** Both `launchd.disable()` and
+  `systemd.disable()` discarded the error from the command that actually stops the service
+  (`_ = runner.Run(...)`) and `launchd.disable` unconditionally `return nil`ed;
+  `systemd.disable` only propagated the later `daemon-reload` error. `claude-remote
+  service uninstall` could print "service uninstalled" while the service was still running.
+  `launchd.disable` now wraps and returns the `launchctl unload` error; `systemd.disable`
+  still always attempts both `disable --now` and `daemon-reload` (cleanup should run
+  either way) but now collects and `errors.Join`s whichever of the two failed, instead of
+  discarding the first. `Manager.Uninstall()` already returned `disable`'s error and now
+  correctly stops before removing the unit file when the service failed to stop, leaving a
+  file that still reflects reality. Tested both platforms with a fake runner that fails the
+  unload/disable step: error is returned and names the failing tool, unit file survives.
 
 - [ ] **Make `service status` distinguish "not installed" from "installed but failed".**
   Both `systemd.status()` and `launchd.status()` collapse *any* non-nil error from the

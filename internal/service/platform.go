@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -62,7 +63,9 @@ func (launchd) enable(runner CommandRunner, unitPath string) error {
 }
 
 func (launchd) disable(runner CommandRunner, unitPath string) error {
-	_ = runner.Run("launchctl", "unload", unitPath)
+	if err := runner.Run("launchctl", "unload", unitPath); err != nil {
+		return fmt.Errorf("launchctl unload: %w", err)
+	}
 	return nil
 }
 
@@ -103,8 +106,14 @@ func (systemd) enable(runner CommandRunner, _ string) error {
 }
 
 func (systemd) disable(runner CommandRunner, _ string) error {
-	_ = runner.Run("systemctl", "--user", "disable", "--now", systemdUnit)
-	return runner.Run("systemctl", "--user", "daemon-reload")
+	var errs []error
+	if err := runner.Run("systemctl", "--user", "disable", "--now", systemdUnit); err != nil {
+		errs = append(errs, fmt.Errorf("systemctl disable --now: %w", err))
+	}
+	if err := runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
+		errs = append(errs, fmt.Errorf("systemctl daemon-reload: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (systemd) status(runner CommandRunner) (string, error) {

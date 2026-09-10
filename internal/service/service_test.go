@@ -121,6 +121,27 @@ func TestUninstallIsFineWhenNothingInstalled(t *testing.T) {
 	}
 }
 
+func TestUninstallPropagatesDisableFailure(t *testing.T) {
+	for _, tc := range platformCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			runner := &fakeRunner{}
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			require.NoError(t, mgr.Install())
+			runner.failOn = tc.tool
+
+			err := mgr.Uninstall()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.tool)
+
+			unitPath := filepath.Join(append([]string{home}, tc.unitRelPath...)...)
+			assert.FileExists(t, unitPath, "a service that failed to stop should not have its unit file removed")
+		})
+	}
+}
+
 func TestStatusReportsNotInstalledWhenToolFails(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
