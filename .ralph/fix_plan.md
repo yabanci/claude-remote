@@ -202,11 +202,12 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   before counting a line as a tool call. Tested with a prose line shaped like a function
   call — it now survives into the extracted answer with zero tool blocks counted.
 
-- [ ] **Recognize commands sent with an `@botname` suffix.** `handleCommand`'s switch
+- [x] **Recognize commands sent with an `@botname` suffix.** `handleCommand`'s switch
   compares the first whitespace-separated field against exact literals like
   `"/cr_status"`; Telegram appends `@<botname>` to commands in group chats, so
-  `/cr_status@mybot` falls through to "unknown command". Strip a trailing `@<name>` from
-  the command token before the switch. Test with a command carrying the suffix.
+  `/cr_status@mybot` fell through to "unknown command". Added `stripBotSuffix`, applied to
+  the command token before the switch, cutting on the first `@`. Tested `/cr_status@somebot`
+  against a running session: recognized, not reported as unknown.
 
 - [x] **Escape untrusted values in the launchd/systemd templates.** `launchd.render`/
   `systemd.render` interpolated `execPath`/`logDir`/`searchPath` via raw `fmt.Sprintf` with

@@ -30,9 +30,14 @@ func commandMenu() []telegram.BotCommand {
 	}
 }
 
+func stripBotSuffix(cmd string) string {
+	base, _, _ := strings.Cut(cmd, "@")
+	return base
+}
+
 func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
 	fields := strings.SplitN(strings.TrimSpace(text), " ", 2)
-	cmd := fields[0]
+	cmd := stripBotSuffix(fields[0])
 	arg := ""
 	if len(fields) > 1 {
 		arg = strings.TrimSpace(fields[1])

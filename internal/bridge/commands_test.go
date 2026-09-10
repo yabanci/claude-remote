@@ -141,6 +141,15 @@ func TestUnknownBridgeCommandIsReported(t *testing.T) {
 	assert.Contains(t, h.lastMessage(), "неизвестная команда")
 }
 
+func TestCommandWithBotSuffixIsRecognized(t *testing.T) {
+	h := newHarness(t).startSession("main")
+
+	h.send("/cr_status@somebot")
+
+	assert.Contains(t, h.lastMessage(), "работает")
+	assert.NotContains(t, h.lastMessage(), "неизвестная команда")
+}
+
 func TestCrSendReportsMissingFile(t *testing.T) {
 	h := newHarness(t)
 
