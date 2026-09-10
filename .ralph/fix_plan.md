@@ -124,14 +124,18 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   (`vanishesOnCaptureRunner`) whose session vanishes inside `CapturePane`, asserting
   `/cr_peek` gets the same "пропала … /cr_restart" message as the other commands.
 
-- [ ] **Retry the Telegram client on transport errors and 5xx, not just 429.**
-  `Client.call()`'s retry loop only backs off when `retryAfter()` returns a positive wait,
-  which only happens for a parsed HTTP 429; a transport error, a body-read failure, a
-  JSON-decode failure, or any non-429 API error (including 5xx) returns immediately with
-  zero retries and the reply is lost for good. Extend the retry policy to cover transport
-  errors and 5xx responses with the existing exponential-backoff mechanism (respect
-  `max_retries`). Test that a transient 500 and a simulated network error both get retried
-  and eventually succeed.
+- [x] **Retry the Telegram client on transport errors and 5xx, not just 429.**
+  `Client.call()`'s retry loop only backed off when `retryAfter()` returned a positive wait,
+  which only happened for a parsed HTTP 429; a transport error, a body-read failure, a
+  JSON-decode failure, or any non-429 API error (including 5xx) returned immediately with
+  zero retries and the reply was lost for good. Added a `retryWithBackoff` sentinel that
+  `doWithRetryHint` returns for a transport error, a body-read failure, a 5xx with an
+  unparseable body, and a 5xx API error without a `retry_after`; `call()` turns that
+  sentinel into an exponential backoff (`backoffForAttempt`, 500ms doubling per attempt,
+  capped at `maxRetryAfter`) while still respecting `max_retries` and a real 429's
+  `retry_after`. A non-5xx API error (e.g. 400) still returns zero retries immediately.
+  Tested a transient 500 and a simulated dropped-connection network error both get retried
+  and eventually succeed, and that persistent 500s still give up after `max_retries`.
 
 - [x] **Make `Config.Save` and the offset store's write atomic.** Both wrote in place via a
   single `os.WriteFile` with no temp-file-plus-rename. A crash or power loss mid-write could

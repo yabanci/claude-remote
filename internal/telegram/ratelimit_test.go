@@ -95,6 +95,74 @@ func TestRateLimitWaitIsCapped(t *testing.T) {
 	assert.LessOrEqual(t, slept[0], 60*time.Second, "an absurd retry_after must be capped")
 }
 
+func TestSendMessageRetriesOnServerError(t *testing.T) {
+	server, attempts := rateLimitedServer(t, func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, "upstream error")
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
+	})
+
+	var slept []time.Duration
+	client := telegram.NewClient("test-token",
+		telegram.WithBaseURL(server.URL),
+		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
+
+	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
+
+	require.NoError(t, err, "a transient 5xx must be retried, not dropped")
+	assert.Equal(t, 2, *attempts)
+	require.Len(t, slept, 1)
+	assert.Greater(t, slept[0], time.Duration(0))
+}
+
+func TestSendMessageGivesUpAfterMaxRetriesOnServerError(t *testing.T) {
+	server, attempts := rateLimitedServer(t, func(_ int, w http.ResponseWriter) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprint(w, "upstream error")
+	})
+
+	client := telegram.NewClient("test-token",
+		telegram.WithBaseURL(server.URL),
+		telegram.WithRetryPolicy(2, func(time.Duration) {}))
+
+	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
+
+	require.Error(t, err)
+	assert.Equal(t, 3, *attempts, "initial attempt plus two retries, then give up")
+}
+
+func TestSendMessageRetriesOnTransportError(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			hj, ok := w.(http.Hijacker)
+			require.True(t, ok, "test server must support hijacking to simulate a dropped connection")
+			conn, _, err := hj.Hijack()
+			require.NoError(t, err)
+			_ = conn.Close()
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"ok":true,"result":{}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	var slept []time.Duration
+	client := telegram.NewClient("test-token",
+		telegram.WithBaseURL(server.URL),
+		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
+
+	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
+
+	require.NoError(t, err, "a network-level failure must be retried, not dropped")
+	assert.Equal(t, 2, attempts)
+	require.Len(t, slept, 1)
+	assert.Greater(t, slept[0], time.Duration(0))
+}
+
 func TestRateLimitWithoutRetryAfterStillWaits(t *testing.T) {
 	server, _ := rateLimitedServer(t, func(attempt int, w http.ResponseWriter) {
 		if attempt == 1 {

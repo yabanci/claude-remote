@@ -20,7 +20,10 @@ const (
 	requestTimeout    = 90 * time.Second
 	defaultMaxRetries = 3
 	maxRetryAfter     = 60 * time.Second
+	baseTransportWait = 500 * time.Millisecond
 )
+
+const retryWithBackoff time.Duration = -1
 
 type Client struct {
 	token      string
@@ -89,11 +92,22 @@ func (c *Client) call(ctx context.Context, method string, form url.Values) (json
 			return result, nil
 		}
 		lastErr = err
+		if wait == retryWithBackoff {
+			wait = backoffForAttempt(attempt)
+		}
 		if wait <= 0 || attempt >= c.maxRetries {
 			return nil, lastErr
 		}
 		c.sleep(wait)
 	}
+}
+
+func backoffForAttempt(attempt int) time.Duration {
+	wait := baseTransportWait << attempt
+	if wait <= 0 || wait > maxRetryAfter {
+		wait = maxRetryAfter
+	}
+	return wait
 }
 
 func (c *Client) callOnce(ctx context.Context, method string, form url.Values) (json.RawMessage, time.Duration, error) {
@@ -115,21 +129,30 @@ func (c *Client) do(req *http.Request, method string) (json.RawMessage, error) {
 func (c *Client) doWithRetryHint(req *http.Request, method string) (json.RawMessage, time.Duration, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("call %s: %w", method, redact(err))
+		return nil, retryWithBackoff, fmt.Errorf("call %s: %w", method, redact(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read response body for %s: %w", method, redact(err))
+		return nil, retryWithBackoff, fmt.Errorf("read response body for %s: %w", method, redact(err))
 	}
 
 	var parsed apiResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return nil, retryWithBackoff, fmt.Errorf("telegram api %s failed: server error %s", method, resp.Status)
+		}
 		return nil, 0, fmt.Errorf("decode response for %s: %w", method, redact(err))
 	}
 	if !parsed.OK {
-		return nil, parsed.retryAfter(), fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
+		if wait := parsed.retryAfter(); wait > 0 {
+			return nil, wait, fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
+		}
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return nil, retryWithBackoff, fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
+		}
+		return nil, 0, fmt.Errorf("telegram api %s failed: %s", method, parsed.Description)
 	}
 	return parsed.Result, 0, nil
 }
