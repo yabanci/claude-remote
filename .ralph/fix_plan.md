@@ -372,7 +372,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
 
 ## Round 3 — findings from the 11.09.2026 full re-audit
 
-- [ ] **Fix `DiffTail`'s scrollback-eviction detector — it false-positives once the pane
+- [x] **Fix `DiffTail`'s scrollback-eviction detector — it false-positives once the pane
   history fills up, not just on genuine eviction.** `internal/bridge/tail.go`
   (`scrollbackLikelyEvicted`) compares `before`/`after` by common *prefix* length. Once a
   session's tmux history hits its 5000-line cap (`tmux.HistoryLimit`), every single new line
@@ -389,7 +389,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   one-line (or N-line) shift is recognized as "mostly the same" instead of "fully evicted."
   Test with two captures that are the same 5000-line buffer shifted by exactly one line.
 
-- [ ] **Make `toolCallPattern` recognize MCP-qualified tool-call lines.**
+- [x] **Make `toolCallPattern` recognize MCP-qualified tool-call lines.**
   `internal/bridge/answer.go`'s `toolCallPattern` (`^[A-Z][A-Za-z]*\(`) requires an
   uppercase first letter and only letters before the paren. MCP tool names are formatted
   `mcp__<server>__<tool>(...)` — lowercase, with underscores — so a line invoking an MCP
@@ -399,7 +399,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   MCP tool call, asserting it's excluded from the extracted answer the same way built-in
   tool calls are.
 
-- [ ] **Make `systemd.status()` handle transitional unit states, not just
+- [x] **Make `systemd.status()` handle transitional unit states, not just
   active/failed/inactive.** `internal/service/platform.go`'s `systemd.status()` (rewritten
   in `037ae0d` specifically to stop collapsing real states into "not installed") only
   special-cases `"failed"` and `"inactive"`; any other real `systemctl is-active` output
