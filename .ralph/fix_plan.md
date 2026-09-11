@@ -297,11 +297,22 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   not-yet-full case (10-line fixtures, no common prefix) to confirm the heuristic doesn't
   fire on a normal short session.
 
-- [ ] **Cover `ensureRunning`'s cold-start failure branches.** No test exercises `Start()`
-  failing or `WaitForSettle()` failing/timing out right after a fresh `Start()` — every
-  fast test pre-seeds the session so `runner.Exists()` is always true. Add tests using the
-  fake runner configured to fail `Start`, and separately to make the post-start
-  `WaitForSettle` fail, asserting the user gets the expected error reply in each case.
+- [x] **Cover `ensureRunning`'s cold-start failure branches.** No test exercised `Start()`
+  failing or the post-start `WaitForSettle()` failing — every fast test pre-seeds the
+  session via `startSession`, so `runner.Exists()` was always true and the whole cold-start
+  path was dead in the suite. The existing `TestCrRestartReportsAFailedStart` only covers
+  `cmdRestart`'s own `Start` call, not this one. Added `coldstart_test.go` with two tests
+  that send ordinary text (not a command) to a session that is not running:
+  `TestAMessageToAStoppedSessionReportsAFailedColdStart` uses `failingRunner` with a
+  `startErr`, and `TestAMessageToAStoppedSessionReportsAnUnreadableScreenAfterStart` lets
+  `Start` succeed but sets `captureErr`, which is the only way `WaitForSettle` returns an
+  error (the hard cap returns the last capture with a nil error, so there is no timeout
+  branch to cover). Each asserts the specific reply — `не удалось запустить сессию` vs
+  `не удалось дождаться запуска сессии`, which is distinct from `reportCaptureFailure`'s
+  text, so the two branches can't be confused — and that nothing was typed into the
+  session. Verified by mutation: stubbing out both error branches in `ensureRunning` makes
+  both tests fail, the first because the message is forwarded into a session that never
+  started.
 
 - [ ] **Make the `/cr_use` test verify actual routing, not just the reply text.**
   `TestCrUseSwitchesActiveSession` only asserts the confirmation text contains the session
