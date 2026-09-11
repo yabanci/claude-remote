@@ -471,7 +471,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `fmt.Sprintf` *argument* rather than part of the format string, so `%%` reaches the unit
   file literally. Tested with `%h` in the exec path and `%n` inside `PATH`.
 
-- [ ] **Make `sendAwaiting` append to `h.tg.updates` like `deliver`/`deliverCallback` do,
+- [x] **Make `sendAwaiting` append to `h.tg.updates` like `deliver`/`deliverCallback` do,
   not replace it.** `internal/bridge/harness_test.go`'s `sendAwaiting` still does
   `h.tg.updates = []telegram.Update{...}` — the exact pattern `deliver`/`deliverCallback`
   were fixed away from in `207cb0d`. It doesn't fire today only because every current call
@@ -480,3 +480,11 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   the second call's queued update would silently never be delivered, the same failure mode
   `207cb0d` fixed everywhere else. Fix it the same way: append with a computed `UpdateID`
   instead of replacing the slice.
+  Extracted the queueing all three helpers shared into `fakeTelegram.enqueue`, which assigns
+  the `UpdateID` and appends under `f.mu` — the same mutex `handle`'s `getUpdates` branch
+  already takes to read `updates`/`nextCall`, so the append no longer races the httptest
+  server goroutine either. `send` now builds its message through a new `userMessage` helper
+  that `sendAwaiting` reuses. Guarded by
+  `TestALongTurnIsAnnouncedEvenWhenItIsNotTheFirstUpdateOfTheChat`: it sends `/cr_help`
+  first, so `nextCall` is already 1 when `sendAwaiting` runs; with the old slice
+  replacement the queued update is never handed out and the test times out.

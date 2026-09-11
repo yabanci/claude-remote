@@ -28,6 +28,19 @@ func TestALongTurnIsAnnouncedBeforeTheAnswerArrives(t *testing.T) {
 	assert.Contains(t, msgs[1], "долгий вопрос")
 }
 
+func TestALongTurnIsAnnouncedEvenWhenItIsNotTheFirstUpdateOfTheChat(t *testing.T) {
+	h := newHarness(t, neverSettlesBeforeTheHardCap)
+	h.startSession("main")
+
+	h.send("/cr_help")
+	h.sendAwaiting("долгий вопрос", 2)
+
+	msgs := h.tg.messages()
+	require.Len(t, msgs, 3)
+	assert.Contains(t, msgs[1], "ещё работаю над ответом")
+	assert.Contains(t, msgs[2], "долгий вопрос")
+}
+
 func TestASlowColdStartIsAnnouncedWhileTheSessionComesUp(t *testing.T) {
 	h := newHarness(t, neverSettlesBeforeTheHardCap)
 

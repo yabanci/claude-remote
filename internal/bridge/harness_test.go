@@ -207,6 +207,13 @@ func (f *fakeTelegram) replyCount() int {
 	return len(f.sent) + len(f.docs)
 }
 
+func (f *fakeTelegram) enqueue(update telegram.Update) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	update.UpdateID = int64(len(f.updates) + 1)
+	f.updates = append(f.updates, update)
+}
+
 func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
 	switch {
@@ -394,28 +401,28 @@ func (h *harness) startSession(name string) *harness {
 	return h
 }
 
-func (h *harness) send(text string) {
-	h.t.Helper()
-	h.deliver(telegram.Message{
+func (h *harness) userMessage(text string) telegram.Message {
+	return telegram.Message{
 		Chat: telegram.Chat{ID: 1},
 		From: &telegram.User{ID: testUserID},
 		Text: text,
-	})
+	}
+}
+
+func (h *harness) send(text string) {
+	h.t.Helper()
+	h.deliver(h.userMessage(text))
 }
 
 func (h *harness) deliver(msg telegram.Message) {
 	h.t.Helper()
-	h.tg.updates = append(h.tg.updates, telegram.Update{
-		UpdateID: int64(len(h.tg.updates) + 1),
-		Message:  &msg,
-	})
+	h.tg.enqueue(telegram.Update{Message: &msg})
 	h.runUntilReply()
 }
 
 func (h *harness) deliverCallback(data string) {
 	h.t.Helper()
-	h.tg.updates = append(h.tg.updates, telegram.Update{
-		UpdateID: int64(len(h.tg.updates) + 1),
+	h.tg.enqueue(telegram.Update{
 		CallbackQuery: &telegram.CallbackQuery{
 			ID:   "cb-1",
 			From: &telegram.User{ID: testUserID},
@@ -451,11 +458,8 @@ func (h *harness) runUntilReplies(want int) {
 
 func (h *harness) sendAwaiting(text string, wantReplies int) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &telegram.Message{
-		Chat: telegram.Chat{ID: 1},
-		From: &telegram.User{ID: testUserID},
-		Text: text,
-	}}}
+	msg := h.userMessage(text)
+	h.tg.enqueue(telegram.Update{Message: &msg})
 	h.runUntilReplies(wantReplies)
 }
 
