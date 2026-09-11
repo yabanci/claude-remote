@@ -250,7 +250,7 @@ func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) 
 	}
 
 	time.Sleep(b.cfg.Settle.ColdStartDelay())
-	if _, err := WaitForSettle(b.watchVisible(s.name), b.cfg.Settle, nil); err != nil {
+	if _, err := WaitForSettle(b.watchVisible(s.name), b.cfg.Settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
 		return false
 	}
@@ -294,7 +294,7 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text stri
 	defer stopTyping()
 
 	time.Sleep(b.cfg.Settle.PostSendDelay())
-	if _, err := WaitForSettle(b.watchVisible(name), b.cfg.Settle, nil); err != nil {
+	if _, err := WaitForSettle(b.watchVisible(name), b.cfg.Settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
 		b.reportCaptureFailure(ctx, chatID, name, err)
 		return false
 	}

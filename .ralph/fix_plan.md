@@ -201,13 +201,22 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   Also carries the two remaining `telegram.NewClient` callsites from `64b996b`, which
   overlapped this work.
 
-- [ ] **Wire `interim_notice_seconds` to something real.** Both production call sites of
-  `WaitForSettle` (`ensureRunning`, `sendAndAwait`) pass a literal `nil` for the
+- [x] **Wire `interim_notice_seconds` to something real.** Both production call sites of
+  `WaitForSettle` (`ensureRunning`, `sendAndAwait`) passed a literal `nil` for the
   `onInterim` callback, even though `settle.go` fully implements and unit-tests the
-  interim-notice mechanism. The config knob does nothing. Pass a real callback from both
-  call sites that sends an interim "ещё работаю…" reply via `b.reply` when it fires. Test
-  that a long-running fake capture triggers at least one interim message via the harness's
-  fake Telegram, for both call sites.
+  interim-notice mechanism — so the config knob did nothing and a user who asked a slow
+  question saw only a typing indicator until `hard_cap_seconds` expired. Added
+  `internal/bridge/interim.go` with two `InterimFunc` constructors, `noticeAnswerStillComing`
+  (sendAndAwait) and `noticeSessionStillStarting` (ensureRunning); each replies through
+  `b.reply` naming the elapsed time rounded to the second, and the cold-start one also names
+  the session, since the two waits are indistinguishable to the user otherwise. The message
+  text lives in package-level constants rather than inline, so the tests assert against the
+  same strings the bridge sends. Tested both call sites with a harness config that cannot
+  settle before the hard cap (`stable_rounds` 1000, `hard_cap_seconds` 1,
+  `interim_notice_seconds` 1): each produces an interim message ahead of the real reply. A
+  third test pins the negative case — a fast turn under the default config sends neither
+  notice — so the callbacks can't start firing on every ordinary message. Both positive
+  tests fail with `nil` restored at the call sites.
 
 - [x] **Fix the tool-call-detection regex false positive.** `toolCallPattern`
   (`^[A-Z][A-Za-z]*\(`) matched genuine assistant prose shaped like "Filter(x) returns…" or
