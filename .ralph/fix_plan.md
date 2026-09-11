@@ -185,14 +185,21 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   afterward. (Commit `d03d9f1` — landed manually after ralph's own session left this
   verified-clean state uncommitted for 8+ stalled iterations; see tooling_ralph_loop.md.)
 
-- [ ] **Cap menu rows and add a text fallback.** `replyWithMenu` puts every option from
-  `ParseMenu` into a single unbounded row; with enough options Telegram's own
-  buttons-per-row limits make the keyboard broken or unusable. Wrap after a reasonable
-  number of buttons per row (e.g. every 3-4). Also: if `b.tg.Send` fails when sending the
-  keyboard, the code only logs and returns — the user gets nothing. Add a plain-text
-  fallback (numbered list of the same options) sent via `b.reply` when the keyboard send
-  fails. Test both: a menu with many options wraps into multiple rows, and a forced Send
-  failure falls back to text.
+- [x] **Cap menu rows and add a text fallback.** `replyWithMenu` built one unbounded row
+  holding every option `ParseMenu` found, so a menu with more options than Telegram allows
+  per row came back rejected — and the rejection only reached `b.log.Error`, leaving the
+  user staring at nothing while the session sat blocked on a choice. Moved the presentation
+  out of `bridge.go` into `Menu` methods: `keyboardRows` chunks the options
+  `menuButtonsPerRow` (3) at a time, `heading` owns the empty-question default, and
+  `asPlainText` renders a numbered list closing with "Ответь номером варианта." so the user
+  knows how to answer without buttons. `replyWithMenu` now warns and falls back to
+  `b.reply(ctx, …)` with that text when the keyboard send fails; passing `ctx` rather than
+  the spent `sendCtx` is deliberate, since `b.reply` derives its own full delivery timeout.
+  The fake Telegram now records per-row button labels (`rowsOfLastKeyboard`) and can reject
+  any send carrying `reply_markup` (`failEveryKeyboardSend`). Tested a seven-option model
+  picker splitting 3/3/1 and a rejected keyboard arriving as text with every option in it.
+  Also carries the two remaining `telegram.NewClient` callsites from `64b996b`, which
+  overlapped this work.
 
 - [ ] **Wire `interim_notice_seconds` to something real.** Both production call sites of
   `WaitForSettle` (`ensureRunning`, `sendAndAwait`) pass a literal `nil` for the

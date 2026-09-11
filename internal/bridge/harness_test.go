@@ -120,21 +120,38 @@ func (f *fakeRunner) pane(session string) string {
 }
 
 type fakeTelegram struct {
-	mu         sync.Mutex
-	sent       []string
-	docs       []string
-	keyboardsL [][]string
-	callbacks  []string
-	typing     int
-	replyTos   []int64
-	updates    []telegram.Update
-	nextCall   int
+	mu           sync.Mutex
+	sent         []string
+	docs         []string
+	keyboardsL   [][]string
+	keyboardRows [][][]string
+	callbacks    []string
+	typing       int
+	replyTos     []int64
+	updates      []telegram.Update
+	nextCall     int
+	rejectMarkup bool
 }
 
 func (f *fakeTelegram) keyboards() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.keyboardsL...)
+}
+
+func (f *fakeTelegram) rowsOfLastKeyboard() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.keyboardRows) == 0 {
+		return nil
+	}
+	return f.keyboardRows[len(f.keyboardRows)-1]
+}
+
+func (f *fakeTelegram) failEveryKeyboardSend() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectMarkup = true
 }
 
 func (f *fakeTelegram) answeredCallbacks() []string {
@@ -206,18 +223,30 @@ func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Reque
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 	case strings.Contains(r.URL.Path, "sendMessage"):
 		require.NoError(t, r.ParseForm())
+		markup := r.FormValue("reply_markup")
 		f.mu.Lock()
+		if markup != "" && f.rejectMarkup {
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"ok":false,"description":"Bad Request: BUTTON_DATA_INVALID"}`)
+			return
+		}
 		f.sent = append(f.sent, r.FormValue("text"))
-		if raw := r.FormValue("reply_markup"); raw != "" {
+		if markup != "" {
 			var kb telegram.InlineKeyboard
-			require.NoError(t, json.Unmarshal([]byte(raw), &kb))
+			require.NoError(t, json.Unmarshal([]byte(markup), &kb))
 			var labels []string
+			var rows [][]string
 			for _, row := range kb.Rows {
+				var rowLabels []string
 				for _, btn := range row {
 					labels = append(labels, btn.Text)
+					rowLabels = append(rowLabels, btn.Text)
 				}
+				rows = append(rows, rowLabels)
 			}
 			f.keyboardsL = append(f.keyboardsL, labels)
+			f.keyboardRows = append(f.keyboardRows, rows)
 		}
 		if to := r.FormValue("reply_to_message_id"); to != "" {
 			var id int64
@@ -262,6 +291,11 @@ func testConfigFor(t *testing.T) config.Config {
 	return cfg
 }
 
+func newTestTelegramClient(baseURL string) *telegram.Client {
+	return telegram.NewClient("test-token", telegram.WithBaseURL(baseURL),
+		telegram.WithRetryPolicy(0, func(time.Duration) {}))
+}
+
 func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner) *harness {
 	t.Helper()
 
@@ -273,7 +307,7 @@ func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,
@@ -310,7 +344,7 @@ func newHarness(t *testing.T, tweaks ...func(*config.Config)) *harness {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	runner := newFakeRunner()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,

@@ -420,25 +420,18 @@ func (b *Bridge) replyWithMenu(ctx context.Context, chatID int64, menu Menu) {
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
 	defer cancel()
 
-	var row []telegram.InlineButton
-	for _, option := range menu.Options {
-		row = append(row, telegram.InlineButton{
-			Text:         option.Key + ". " + option.Label,
-			CallbackData: option.Key,
-		})
-	}
-
-	text := menu.Question
-	if text == "" {
-		text = "сессия ждёт выбора"
-	}
 	opts := telegram.SendOptions{
 		ReplyTo:  b.replyTo,
-		Keyboard: &telegram.InlineKeyboard{Rows: [][]telegram.InlineButton{row}},
+		Keyboard: &telegram.InlineKeyboard{Rows: menu.keyboardRows()},
 	}
-	if err := b.tg.Send(sendCtx, chatID, text, opts); err != nil {
-		b.log.Error("send menu failed", "err", err)
+	err := b.tg.Send(sendCtx, chatID, menu.heading(), opts)
+	if err == nil {
+		return
 	}
+
+	b.log.Warn("sending the menu as buttons failed, falling back to a numbered text menu",
+		"err", err, "options", len(menu.Options))
+	b.reply(ctx, chatID, menu.asPlainText())
 }
 
 func (b *Bridge) replyAsDocument(ctx context.Context, chatID int64, text string) {
