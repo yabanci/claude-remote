@@ -125,3 +125,24 @@ func TestWaitForSettleInvokesInterimCallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, notices)
 }
+
+func TestWaitForSettleCountsCaptureDurationTowardTheHardCap(t *testing.T) {
+	const captureDuration = 30 * time.Millisecond
+	cfg := config.SettleConfig{PollIntervalMS: 2, StableRounds: 1000, HardCapSeconds: 1}
+	frame := 0
+	capture := func() (string, error) {
+		time.Sleep(captureDuration)
+		frame++
+		return fmt.Sprintf("frame-%d", frame), nil
+	}
+
+	start := time.Now()
+	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	naiveRounds := int64(cfg.HardCapDuration() / cfg.PollInterval())
+	naiveWallClock := time.Duration(naiveRounds) * (cfg.PollInterval() + captureDuration)
+	assert.Less(t, elapsed, naiveWallClock/4)
+	assert.GreaterOrEqual(t, elapsed, cfg.HardCapDuration()-cfg.PollInterval()-captureDuration)
+}

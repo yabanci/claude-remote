@@ -37,23 +37,24 @@ func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim Inter
 	hardCap := cfg.HardCapDuration()
 	interimEvery := cfg.InterimNoticeDuration()
 
+	startedAt := time.Now()
 	last, err := capture()
 	if err != nil {
 		return "", err
 	}
 
-	var elapsed time.Duration
+	elapsed := time.Since(startedAt)
 	var lastNotice time.Duration
 	stableRounds := 0
 
 	for stableRounds < cfg.StableRounds && elapsed < hardCap {
 		time.Sleep(pollInterval)
-		elapsed += pollInterval
 
 		current, err := capture()
 		if err != nil {
 			return "", err
 		}
+		elapsed = time.Since(startedAt)
 
 		if current == last {
 			stableRounds++

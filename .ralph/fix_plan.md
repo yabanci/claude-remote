@@ -248,14 +248,19 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   well-formed), a systemd path with a space (still one argument), and a systemd path with an
   embedded `"` (escaped, not closing the quote early).
 
-- [ ] **Make `elapsed` in `WaitForSettle` reflect real wall-clock time.** `elapsed` is
-  incremented by the fixed `pollInterval` before `capture()` runs each round; `capture()`'s
-  own duration (tmux's own timeout allows up to 15s) is never added, so reaching
-  `hard_cap_seconds` in real time can take meaningfully longer than the configured cap.
-  Track elapsed against an actual clock read each round instead of a running sum of the
-  poll interval alone. Test that a slow fake capture function causes the hard cap to trip
-  closer to the configured wall-clock duration than the naive poll-interval sum would
-  predict.
+- [x] **Make `elapsed` in `WaitForSettle` reflect real wall-clock time.** `elapsed` was
+  incremented by the fixed `pollInterval` before `capture()` ran each round; `capture()`'s
+  own duration (tmux's own timeout allows up to 15s) was never added, so `elapsed` drifted
+  arbitrarily far behind the clock and both things derived from it — the `hard_cap_seconds`
+  exit and the elapsed figure `interim_notice_seconds` reports to the user — were wrong by
+  the same factor. With the shipped defaults (1.5s poll) and a tmux capture near its 15s
+  timeout, the loop advanced `elapsed` by 1.5s per 16.5s of real time, so a 1200s hard cap
+  would not trip for roughly 3.7 hours, and an interim notice claiming "2 minutes" would be
+  sent 22 minutes in. `WaitForSettle` now stamps `startedAt` before the first capture and
+  re-reads `time.Since(startedAt)` after each round's capture, so capture time counts
+  against the cap and the notice reports true elapsed time. Tested with a capture that
+  sleeps 30ms against a 2ms poll interval and a 1s hard cap: the call now returns in ~1s
+  where the poll-interval sum predicted (and the old code took) 16.7s.
 
 - [ ] **Route `cmdService`'s output through the injected writer.** `cmdService`'s success
   paths call `fmt.Println` directly instead of using the `stdout` writer that `run()`
