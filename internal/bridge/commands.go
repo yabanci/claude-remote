@@ -18,6 +18,8 @@ var validSessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 const (
 	sessionNotRunningNotice = "сессия %q не запущена"
 	stopFailedNotice        = "не удалось остановить: %v"
+	startFailedRolledBack   = "сессия не запустилась, откатываю конфиг: %v"
+	startFailedRollbackKept = "сессия не запустилась (%v), и откатить конфиг не удалось (%v): запись %q осталась в %s — убери её вручную, иначе она вернётся после перезапуска"
 )
 
 func commandMenu() []telegram.BotCommand {
@@ -155,21 +157,26 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 	b.activeSession[chatID] = name
 
 	if err := b.runner.Start(name, dir, "claude"); err != nil {
-		b.rollbackNewSession(chatID, name)
-		b.reply(ctx, chatID, fmt.Sprintf("сессия не запустилась, откатываю конфиг: %v", err))
+		if rollbackErr := b.rollbackNewSession(chatID, name); rollbackErr != nil {
+			b.reply(ctx, chatID, fmt.Sprintf(startFailedRollbackKept, err, rollbackErr, name, b.configPath))
+			return
+		}
+		b.reply(ctx, chatID, fmt.Sprintf(startFailedRolledBack, err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
 }
 
-func (b *Bridge) rollbackNewSession(chatID int64, name string) {
+func (b *Bridge) rollbackNewSession(chatID int64, name string) error {
 	delete(b.cfg.Sessions, name)
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "err", err)
+	saveErr := config.Save(b.configPath, b.cfg)
+	if saveErr != nil {
+		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "path", b.configPath, "err", saveErr)
 	}
 	if b.activeSession[chatID] == name {
 		delete(b.activeSession, chatID)
 	}
+	return saveErr
 }
 
 func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {

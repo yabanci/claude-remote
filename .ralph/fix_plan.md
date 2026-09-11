@@ -410,7 +410,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   cover, the bug it was written to close. Test with `statusOutput` set to `"activating"`
   and `"deactivating"`, asserting neither reports not-installed.
 
-- [ ] **Tell the user honestly when `/cr_new`'s rollback itself fails to save.**
+- [x] **Tell the user honestly when `/cr_new`'s rollback itself fails to save.**
   `internal/bridge/commands.go`'s `rollbackNewSession` calls `config.Save` a second time (to
   remove the just-added entry) and only logs if that second save fails — but `cmdNew`
   unconditionally replies "откатываю конфиг" regardless of whether the rollback's own save
