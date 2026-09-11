@@ -96,7 +96,7 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg.Settle.ColdStartDelayMS = 1000
 	cfg.Settle.PostSendDelayMS = 1500
 
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	lh.configPath = filepath.Join(t.TempDir(), "config.yaml")
 	lh.bridge = bridge.New(cfg, lh.configPath, tg, bridge.NewTmuxRunner(), logger, t.TempDir())
