@@ -331,12 +331,24 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   failure path). Add one, asserting the warning is logged (see the offset-read-error task
   above) and the store falls back to offset 0.
 
-- [ ] **Cover `bootstrapOwner`'s `config.Save` failure branch.** This is the fail-closed
+- [x] **Cover `bootstrapOwner`'s `config.Save` failure branch.** This is the fail-closed
   path that refuses to bind bridge ownership to the first sender when the binding can't be
-  persisted — currently untested anywhere in the module, including `config.Save`'s own
-  `MkdirAll`/`WriteFile` error branches. Make the config path unwritable in a test (or
-  inject a save failure) and assert the bridge does *not* set `b.cfg` to the candidate and
-  replies with the refusal message.
+  persisted, and nothing in the module exercised it — nor `config.Save`'s own `MkdirAll`/
+  write error branches. The branch is the whole of the bridge's trust-on-first-use
+  security: an unconfigured bridge binds to whoever writes first, and if that binding
+  cannot be persisted it must refuse rather than serve an unverified stranger for the rest
+  of the process's life. Added `internal/bridge/bootstrap_test.go` with
+  `TestAnUnsavableConfigLeavesTheBridgeUnbound`: an empty `AllowedUsers`, a config path
+  occupied by a non-empty directory (so `atomicfile.Write`'s rename cannot succeed), and
+  *two* messages from the same stranger — asserting the refusal both times, because the
+  bug worth pinning is not the first reply but the second, where a bridge that bound itself
+  in memory despite the failed save would treat the sender as the owner. Also asserts
+  nothing was typed into the session. Added two `config.Save` tests pinning that the two
+  failure modes stay distinguishable to the caller: a parent path that is a file yields
+  `create config dir`, a target path that is a non-empty directory yields `write config`
+  naming the file. Verified by mutation: dropping the `return false` (keeping only the log
+  line) fails the test three ways, the damning one being `покажи содержимое .env` reaching
+  the live session's keystrokes.
 
 - [x] **De-duplicate repeated error strings.** `"сессия %q не запущена"` was written out
   identically in `cmdKill`, `cmdInterrupt` and `cmdPeek`, and `"не удалось остановить: %v"`

@@ -124,6 +124,30 @@ func TestSaveReplacesExistingConfigWholesale(t *testing.T) {
 	assert.NotContains(t, string(data), "stale config body")
 }
 
+func TestSaveSaysWhichStepFailedWhenTheConfigDirCannotBeCreated(t *testing.T) {
+	occupied := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(occupied, []byte("x"), 0o600))
+
+	err := config.Save(filepath.Join(occupied, "config.yaml"), config.Default())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create config dir",
+		"the caller has to be able to tell a bad directory from a bad write")
+}
+
+func TestSaveSaysWhichStepFailedWhenTheConfigCannotBeWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.Mkdir(path, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(path, "keepme"), []byte("x"), 0o600))
+
+	err := config.Save(path, config.Default())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write config",
+		"the caller has to be able to tell a bad write from a bad directory")
+	assert.Contains(t, err.Error(), path, "and which file it was")
+}
+
 func TestApplySettleDefaultsOnPartialConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
