@@ -73,7 +73,7 @@ func (b *Bridge) cmdStatus(ctx context.Context, chatID int64) {
 	current := b.activeSessionName(chatID)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "текущая сессия: %s\n\n", current)
-	for _, name := range sortedSessionNames(b.cfg.Sessions) {
+	for _, name := range sortedSessionNames(b.sessionsSnapshot()) {
 		state := "остановлена"
 		if b.runner.Exists(name) {
 			state = "работает"
@@ -90,8 +90,9 @@ func (b *Bridge) cmdStatus(ctx context.Context, chatID int64) {
 func (b *Bridge) cmdSessions(ctx context.Context, chatID int64) {
 	current := b.activeSessionName(chatID)
 	var sb strings.Builder
-	for _, name := range sortedSessionNames(b.cfg.Sessions) {
-		sc := b.cfg.Sessions[name]
+	sessions := b.sessionsSnapshot()
+	for _, name := range sortedSessionNames(sessions) {
+		sc := sessions[name]
 		marker := ""
 		if name == current {
 			marker = " [active]"
@@ -106,11 +107,11 @@ func (b *Bridge) cmdUse(ctx context.Context, chatID int64, name string) {
 		b.reply(ctx, chatID, "укажи имя: /cr_use <имя>")
 		return
 	}
-	if _, ok := b.cfg.Sessions[name]; !ok {
+	if !b.hasSession(name) {
 		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не найдена, см. /cr_sessions", name))
 		return
 	}
-	b.activeSession[chatID] = name
+	b.setActiveSession(chatID, name)
 	b.reply(ctx, chatID, fmt.Sprintf("активная сессия: %s", name))
 }
 
@@ -127,11 +128,6 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 		return
 	}
 
-	if _, exists := b.cfg.Sessions[name]; exists {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q уже существует, используй /cr_use", name))
-		return
-	}
-
 	dir, err := config.ExpandDir(rawDir)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось развернуть путь: %v", err))
@@ -142,29 +138,17 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 		return
 	}
 
-	b.cfg.Sessions[name] = config.SessionConfig{Dir: rawDir, Command: "claude"}
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось сохранить конфиг: %v", err))
+	if err := b.addSession(chatID, name, rawDir); err != nil {
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
-	b.activeSession[chatID] = name
 
-	if err := b.runner.Start(name, dir, "claude"); err != nil {
+	if err := b.runner.Start(name, dir, defaultSessionCommand); err != nil {
 		b.rollbackNewSession(chatID, name)
 		b.reply(ctx, chatID, fmt.Sprintf("сессия не запустилась, откатываю конфиг: %v", err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
-}
-
-func (b *Bridge) rollbackNewSession(chatID int64, name string) {
-	delete(b.cfg.Sessions, name)
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "err", err)
-	}
-	if b.activeSession[chatID] == name {
-		delete(b.activeSession, chatID)
-	}
 }
 
 func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
