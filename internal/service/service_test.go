@@ -423,3 +423,11 @@ func TestSystemdRenderEscapesEmbeddedQuotes(t *testing.T) {
 
 	assert.Contains(t, out, `ExecStart="/opt/weird\"path/claude-remote" run`)
 }
+
+func TestSystemdRenderEscapesPercentSpecifiers(t *testing.T) {
+	out := systemd{}.render(`/opt/%h/claude-remote`, "", `/usr/bin:/opt/%n/bin`)
+
+	assert.Contains(t, out, `ExecStart="/opt/%%h/claude-remote" run`,
+		"an unescaped %h is expanded by systemd into the user's home directory at unit-start time")
+	assert.Contains(t, out, `Environment="PATH=/usr/bin:/opt/%%n/bin"`)
+}

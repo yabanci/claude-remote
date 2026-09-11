@@ -452,13 +452,17 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   symlink pointing outside (`key.txt -> outside/id_rsa`), and a symlink that stays inside
   (`latest -> out`), which must still be followed and delivered.
 
-- [ ] **Escape `%` in the generated systemd unit, not just `\` and `"`.**
-  `internal/service/platform.go`'s `systemdEscaper` (from `ea6cb4e`) escapes backslash and
+- [x] **Escape `%` in the generated systemd unit, not just `\` and `"`.**
+  `internal/service/platform.go`'s `systemdEscaper` (from `ea6cb4e`) escaped backslash and
   double-quote but not `%`, and systemd expands `%h`/`%n`/`%i`-style specifiers in
-  `Environment=`/`ExecStart=` lines. An exec path or `$PATH` value containing a literal
-  `%`-specifier sequence gets silently mis-expanded by systemd at unit-start time instead of
-  being treated as literal text. Escape `%` (systemd's own convention is `%%`) alongside the
-  existing characters. Test with a path containing a literal `%h`.
+  `Environment=`/`ExecStart=` lines. An exec path or `$PATH` value holding a literal
+  `%`-specifier sequence was silently mis-expanded by systemd at unit-start time: a binary
+  installed under `/opt/%h/` got an `ExecStart` pointing at the user's home directory
+  instead, and the service failed to start for a reason the unit file does not show.
+  Added `%` -> `%%` to the existing `strings.NewReplacer`; the replacements do not cascade,
+  so the added pair cannot double-escape the other two, and the escaped text is a
+  `fmt.Sprintf` *argument* rather than part of the format string, so `%%` reaches the unit
+  file literally. Tested with `%h` in the exec path and `%n` inside `PATH`.
 
 - [ ] **Make `sendAwaiting` append to `h.tg.updates` like `deliver`/`deliverCallback` do,
   not replace it.** `internal/bridge/harness_test.go`'s `sendAwaiting` still does

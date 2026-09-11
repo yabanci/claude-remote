@@ -130,7 +130,7 @@ func (systemd) render(execPath, _, searchPath string) string {
 	return fmt.Sprintf(systemdTemplate, systemdEnv("PATH", searchPath), systemdArg(execPath))
 }
 
-var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`)
 
 func systemdArg(s string) string {
 	return `"` + systemdEscaper.Replace(s) + `"`
