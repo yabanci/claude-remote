@@ -7,25 +7,47 @@ import (
 	"github.com/yabanci/claude-remote/internal/config"
 )
 
-const scrollbackEvictedReply = "ответ недоступен — экран сессии прокрутился дальше истории, посмотри /cr_peek"
+const (
+	scrollbackEvictedReply = "ответ недоступен — экран сессии прокрутился дальше истории, посмотри /cr_peek"
+	minCarriedOverLines    = 4
+)
 
 func DiffTail(before, after string) string {
 	beforeLines := strings.Split(before, "\n")
 	afterLines := strings.Split(after, "\n")
 
-	common := 0
-	for common < len(beforeLines) && common < len(afterLines) && beforeLines[common] == afterLines[common] {
-		common++
-	}
-
-	if scrollbackLikelyEvicted(common, beforeLines, afterLines) {
+	carried := carriedOverLines(beforeLines, afterLines)
+	if scrollbackLikelyEvicted(carried, beforeLines, afterLines) {
 		return scrollbackEvictedReply
 	}
-	return strings.TrimSpace(strings.Join(afterLines[common:], "\n"))
+	return strings.TrimSpace(strings.Join(afterLines[carried:], "\n"))
 }
 
-func scrollbackLikelyEvicted(common int, beforeLines, afterLines []string) bool {
-	return common == 0 && len(beforeLines) >= captureHistoryLines && len(afterLines) >= captureHistoryLines
+func carriedOverLines(beforeLines, afterLines []string) int {
+	for evicted := 0; evicted < len(beforeLines); evicted++ {
+		if startsWith(afterLines, beforeLines[evicted:]) {
+			return len(beforeLines) - evicted
+		}
+	}
+	return 0
+}
+
+func startsWith(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i := range prefix {
+		if lines[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func scrollbackLikelyEvicted(carried int, beforeLines, afterLines []string) bool {
+	return carried < minCarriedOverLines &&
+		len(beforeLines) >= captureHistoryLines &&
+		len(afterLines) >= captureHistoryLines
 }
 
 type CaptureFunc func() (string, error)

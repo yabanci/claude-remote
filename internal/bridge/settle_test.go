@@ -53,12 +53,47 @@ func TestDiffTailReturnsWholeCaptureWhenHistoryIsNotYetFull(t *testing.T) {
 	assert.Equal(t, after, got)
 }
 
+func TestDiffTailFollowsScrollbackShiftedByOneLine(t *testing.T) {
+	history := historyRows("line", 5000)
+	before := strings.Join(history, "\n")
+	after := strings.Join(append(append([]string{}, history[1:]...), "the reply"), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, "the reply", got)
+}
+
+func TestDiffTailFollowsScrollbackShiftedByManyLines(t *testing.T) {
+	history := historyRows("line", 5000)
+	reply := historyRows("reply", 400)
+	before := strings.Join(history, "\n")
+	after := strings.Join(append(append([]string{}, history[400:]...), reply...), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, strings.Join(reply, "\n"), got)
+}
+
+func TestDiffTailFallsBackWhenOnlyATrailingLineSurvivedTheShift(t *testing.T) {
+	before := strings.Join(append(historyRows("before line", 4999), "╭────╮"), "\n")
+	after := strings.Join(append([]string{"╭────╮"}, historyRows("after line", 4999)...), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Contains(t, got, "/cr_peek")
+	assert.NotContains(t, got, "after line")
+}
+
 func fullHistoryPane(linePrefix string, lines int) string {
+	return strings.Join(historyRows(linePrefix, lines), "\n")
+}
+
+func historyRows(linePrefix string, lines int) []string {
 	rows := make([]string, lines)
 	for i := range rows {
 		rows[i] = fmt.Sprintf("%s %d", linePrefix, i)
 	}
-	return strings.Join(rows, "\n")
+	return rows
 }
 
 func sequenceCapture(values []string) bridge.CaptureFunc {
