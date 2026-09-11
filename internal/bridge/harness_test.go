@@ -321,7 +321,7 @@ func testConfigFor(t *testing.T) config.Config {
 
 func newTestTelegramClient(baseURL string) *telegram.Client {
 	return telegram.NewClient("test-token", telegram.WithBaseURL(baseURL),
-		telegram.WithRetryPolicy(0, func(time.Duration) {}))
+		telegram.WithMaxRetries(0))
 }
 
 func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner) *harness {

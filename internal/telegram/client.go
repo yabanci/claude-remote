@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -30,8 +31,10 @@ type Client struct {
 	apiBase    string
 	httpClient *http.Client
 	maxRetries int
-	sleep      func(time.Duration)
+	sleep      Sleeper
 }
+
+type Sleeper func(ctx context.Context, d time.Duration) error
 
 type Option func(*Client)
 
@@ -39,11 +42,8 @@ func WithBaseURL(baseURL string) Option {
 	return func(c *Client) { c.apiBase = baseURL }
 }
 
-func WithRetryPolicy(maxRetries int, sleep func(time.Duration)) Option {
-	return func(c *Client) {
-		c.maxRetries = maxRetries
-		c.sleep = sleep
-	}
+func WithMaxRetries(maxRetries int) Option {
+	return func(c *Client) { c.maxRetries = maxRetries }
 }
 
 func NewClient(token string, opts ...Option) *Client {
@@ -52,7 +52,7 @@ func NewClient(token string, opts ...Option) *Client {
 		apiBase:    defaultAPIBase,
 		httpClient: &http.Client{Timeout: requestTimeout},
 		maxRetries: defaultMaxRetries,
-		sleep:      time.Sleep,
+		sleep:      sleepUntil,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -98,7 +98,21 @@ func (c *Client) call(ctx context.Context, method string, form url.Values) (json
 		if wait <= 0 || attempt >= c.maxRetries {
 			return nil, lastErr
 		}
-		c.sleep(wait)
+		if err := c.sleep(ctx, wait); err != nil {
+			return nil, errors.Join(lastErr, err)
+		}
+	}
+}
+
+func sleepUntil(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

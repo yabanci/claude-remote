@@ -37,7 +37,7 @@ func TestSendMessageRetriesOnRateLimit(t *testing.T) {
 	var slept []time.Duration
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
+		telegram.WithMaxRetries(3), telegram.WithSleeper(func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }))
 
 	err := client.Send(context.Background(), 42, "длинный ответ", telegram.SendOptions{})
 
@@ -53,7 +53,7 @@ func TestSendMessageGivesUpAfterMaxRetries(t *testing.T) {
 
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(2, func(time.Duration) {}))
+		telegram.WithMaxRetries(2), telegram.WithSleeper(func(context.Context, time.Duration) error { return nil }))
 
 	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
@@ -68,7 +68,7 @@ func TestNonRateLimitErrorIsNotRetried(t *testing.T) {
 
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(3, func(time.Duration) {}))
+		telegram.WithMaxRetries(3), telegram.WithSleeper(func(context.Context, time.Duration) error { return nil }))
 
 	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
@@ -88,7 +88,7 @@ func TestRateLimitWaitIsCapped(t *testing.T) {
 	var slept []time.Duration
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(2, func(d time.Duration) { slept = append(slept, d) }))
+		telegram.WithMaxRetries(2), telegram.WithSleeper(func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }))
 
 	require.NoError(t, client.Send(context.Background(), 42, "текст", telegram.SendOptions{}))
 	require.Len(t, slept, 1)
@@ -108,7 +108,7 @@ func TestSendMessageRetriesOnServerError(t *testing.T) {
 	var slept []time.Duration
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
+		telegram.WithMaxRetries(3), telegram.WithSleeper(func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }))
 
 	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
@@ -126,7 +126,7 @@ func TestSendMessageGivesUpAfterMaxRetriesOnServerError(t *testing.T) {
 
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(2, func(time.Duration) {}))
+		telegram.WithMaxRetries(2), telegram.WithSleeper(func(context.Context, time.Duration) error { return nil }))
 
 	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
@@ -153,7 +153,7 @@ func TestSendMessageRetriesOnTransportError(t *testing.T) {
 	var slept []time.Duration
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(3, func(d time.Duration) { slept = append(slept, d) }))
+		telegram.WithMaxRetries(3), telegram.WithSleeper(func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }))
 
 	err := client.Send(context.Background(), 42, "текст", telegram.SendOptions{})
 
@@ -175,9 +175,33 @@ func TestRateLimitWithoutRetryAfterStillWaits(t *testing.T) {
 	var slept []time.Duration
 	client := telegram.NewClient("test-token",
 		telegram.WithBaseURL(server.URL),
-		telegram.WithRetryPolicy(2, func(d time.Duration) { slept = append(slept, d) }))
+		telegram.WithMaxRetries(2), telegram.WithSleeper(func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }))
 
 	require.NoError(t, client.Send(context.Background(), 42, "текст", telegram.SendOptions{}))
 	require.Len(t, slept, 1)
 	assert.Greater(t, slept[0], time.Duration(0), "a 429 without retry_after should still back off")
+}
+
+func TestCancellingTheContextAbortsTheRetryWait(t *testing.T) {
+	server, attempts := rateLimitedServer(t, func(_ int, w http.ResponseWriter) {
+		_, _ = fmt.Fprint(w, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 60","parameters":{"retry_after":60}}`)
+	})
+
+	client := telegram.NewClient("test-token",
+		telegram.WithBaseURL(server.URL),
+		telegram.WithMaxRetries(3))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	err := client.Send(ctx, 42, "текст", telegram.SendOptions{})
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "the abort reason must survive, not be hidden behind the 429")
+	assert.Contains(t, err.Error(), "Too Many Requests", "the error that triggered the retry must still be readable")
+	assert.Less(t, elapsed, 5*time.Second, "a cancelled context must not wait out the 60s retry_after")
+	assert.Equal(t, 1, *attempts, "no further request may be sent after cancellation")
 }

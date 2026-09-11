@@ -1,6 +1,7 @@
 package bridge_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -112,7 +113,7 @@ func TestWaitForSettleStopsOnceStable(t *testing.T) {
 	cfg := config.SettleConfig{PollIntervalMS: 5, StableRounds: 2, HardCapSeconds: 5}
 	capture := sequenceCapture([]string{"a", "b", "b", "b", "b"})
 
-	got, err := bridge.WaitForSettle(capture, cfg, nil)
+	got, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "b", got)
@@ -127,7 +128,7 @@ func TestWaitForSettleHitsHardCapWhenNeverStable(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -139,7 +140,7 @@ func TestWaitForSettlePropagatesCaptureError(t *testing.T) {
 	boom := errors.New("tmux gone")
 	capture := func() (string, error) { return "", boom }
 
-	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 
 	require.ErrorIs(t, err, boom)
 }
@@ -153,7 +154,7 @@ func TestWaitForSettleInvokesInterimCallback(t *testing.T) {
 	}
 
 	var notices []time.Duration
-	_, err := bridge.WaitForSettle(capture, cfg, func(elapsed time.Duration) {
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, func(elapsed time.Duration) {
 		notices = append(notices, elapsed)
 	})
 
@@ -172,7 +173,7 @@ func TestWaitForSettleCountsCaptureDurationTowardTheHardCap(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -180,4 +181,24 @@ func TestWaitForSettleCountsCaptureDurationTowardTheHardCap(t *testing.T) {
 	naiveWallClock := time.Duration(naiveRounds) * (cfg.PollInterval() + captureDuration)
 	assert.Less(t, elapsed, naiveWallClock/4)
 	assert.GreaterOrEqual(t, elapsed, cfg.HardCapDuration()-cfg.PollInterval()-captureDuration)
+}
+
+func TestWaitForSettleReturnsAsSoonAsTheContextIsCancelled(t *testing.T) {
+	cfg := config.SettleConfig{PollIntervalMS: 20, StableRounds: 1000, HardCapSeconds: 5}
+	frame := 0
+	capture := func() (string, error) {
+		frame++
+		return fmt.Sprintf("frame-%d", frame), nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	_, err := bridge.WaitForSettle(ctx, capture, cfg, nil)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.Canceled, "a cancelled context must abort the poll loop, not wait out the hard cap")
+	assert.Less(t, elapsed, cfg.HardCapDuration()/2)
 }

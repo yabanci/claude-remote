@@ -422,18 +422,25 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   `config.Save` call fail while the first (creating the entry) succeeds, asserting the
   user's reply reflects the failure and doesn't claim a clean rollback.
 
-- [ ] **Give `WaitForSettle` a `context.Context` so shutdown isn't blocked on it for up to
+- [x] **Give `WaitForSettle` a `context.Context` so shutdown isn't blocked on it for up to
   `hard_cap_seconds`.** Neither `internal/bridge/settle.go`'s `WaitForSettle` nor
-  `internal/telegram/client.go`'s retry loop in `call()` ever check `ctx.Err()` — the retry
-  loop's `c.sleep(wait)` runs to completion regardless of cancellation, and `WaitForSettle`'s
-  only exit conditions are `stableRounds` reached or the hard cap elapsing (default 1200s).
-  Combined with `main.go`'s `signal.NotifyContext` on SIGTERM: if a shutdown signal arrives
-  while a turn is genuinely busy, the process can't honor it until the turn settles or 20
-  minutes pass, and the process manager's own stop-timeout will almost certainly SIGKILL it
-  first, losing the in-flight reply with no log trail. Thread a context through both; select
-  on `ctx.Done()` in the retry sleep and in `WaitForSettle`'s poll loop, returning promptly
-  on cancellation. Test that a cancelled context stops both well before their respective
-  hard caps.
+  `internal/telegram/client.go`'s retry loop in `call()` checked `ctx.Err()` — the retry
+  loop's `c.sleep(wait)` ran to completion regardless of cancellation, and `WaitForSettle`'s
+  only exit conditions were `stableRounds` reached or the hard cap elapsing (default 1200s).
+  Combined with `main.go`'s `signal.NotifyContext` on SIGTERM, a shutdown signal arriving
+  during a busy turn could not be honored until the turn settled or 20 minutes passed, and
+  the process manager's stop-timeout would SIGKILL first, losing the in-flight reply with no
+  log trail. `WaitForSettle` now takes a `ctx` as its first parameter and its poll sleep is a
+  `select` on `ctx.Done()` vs a timer, returning the last capture plus `ctx.Err()`. The
+  client's retry wait moved behind a `Sleeper` (`func(context.Context, time.Duration) error`)
+  defaulting to the same ctx-aware sleep; on cancellation it returns
+  `errors.Join(lastErr, ctx.Err())` so the 429 that triggered the retry stays readable next
+  to the abort reason, and no further HTTP request is sent. `WithRetryPolicy` was replaced by
+  `WithMaxRetries` — production code never had a reason to inject a sleep function, so the
+  test-only seam lives in `internal/telegram/export_test.go` as `WithSleeper` and is not part
+  of the package's public API. Tested both sides: a context cancelled after 50ms aborts a
+  1000-round settle well inside half the hard cap, and aborts a `retry_after: 60` wait in
+  under 5s with exactly one attempt made.
 
 - [x] **Fix `/cr_send`'s containment check to survive a symlink inside the session
   directory.** `internal/bridge/commands.go`'s `resolveSendPath` (from `330a8b7`, the

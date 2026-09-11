@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -54,7 +55,7 @@ type CaptureFunc func() (string, error)
 
 type InterimFunc func(elapsed time.Duration)
 
-func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim InterimFunc) (string, error) {
+func WaitForSettle(ctx context.Context, capture CaptureFunc, cfg config.SettleConfig, onInterim InterimFunc) (string, error) {
 	pollInterval := cfg.PollInterval()
 	hardCap := cfg.HardCapDuration()
 	interimEvery := cfg.InterimNoticeDuration()
@@ -70,7 +71,9 @@ func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim Inter
 	stableRounds := 0
 
 	for stableRounds < cfg.StableRounds && elapsed < hardCap {
-		time.Sleep(pollInterval)
+		if err := sleepUntil(ctx, pollInterval); err != nil {
+			return last, err
+		}
 
 		current, err := capture()
 		if err != nil {
@@ -92,4 +95,16 @@ func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim Inter
 	}
 
 	return last, nil
+}
+
+func sleepUntil(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
