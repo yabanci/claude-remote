@@ -25,6 +25,14 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   deliberate choice already made once, guarded by `TestARestartedBridgeDoesNotReplayHandledMessages`.
   It is a design trade-off, not a bug. Do not touch it in this pass.
 
+- `/cr_interrupt` starvation during a long-running reply (`Run()` processes updates strictly
+  sequentially; `handleUpdate` can block inside `WaitForSettle` for up to `hard_cap_seconds`,
+  so `/cr_interrupt` sits unfetched for the whole wait). The user is fixing this by hand
+  (WIP: goroutine-per-update dispatch, per-session mutex, `internal/bridge/state.go`). DO NOT
+  touch `internal/bridge/bridge.go`'s `Run`/`dispatch`, `internal/bridge/commands.go`'s
+  dispatch wiring, `internal/bridge/state.go`, or `internal/bridge/harness_test.go`'s
+  `awaitStop`/shutdown helpers in this pass — those are being edited live outside this loop.
+
 ## Tasks
 
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and
@@ -61,19 +69,6 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
 - [x] **Make `/cr_kill` refuse to kill a session that is not configured.** Done before the
   loop started: it killed any tmux session by name, including one the user runs by hand.
   Restricted to configured sessions, with tests.
-
-- [ ] **Fix `/cr_interrupt` starvation during a long-running reply.** `Run()` processes
-  Telegram updates strictly sequentially — `GetUpdates` is not called again until
-  `handleUpdate` fully returns, and `handleUpdate` can block inside `WaitForSettle` for up
-  to `hard_cap_seconds` (default 1200s / 20 min). A user who wants to interrupt a stuck
-  reply can't: `/cr_interrupt` sits unfetched on Telegram's side for the whole wait. Fix:
-  dispatch each update's handling so the bridge keeps polling `GetUpdates` while a previous
-  message is still in flight — run `handleUpdate` in its own goroutine, guarded by a
-  per-session mutex so two messages to the *same* session never interleave, while control
-  commands (`/cr_interrupt`, `/cr_kill`, `/cr_status`, `/cr_peek`) bypass that mutex
-  entirely and execute immediately regardless of whether the session is currently busy.
-  Test: a fake runner whose capture blocks until released, prove `/cr_interrupt` is
-  delivered and acted on while the first message is still in flight.
 
 - [x] **Reject tmux-unsafe session names in `/cr_new`.** `cmdNew` stored `parts[0]` as the
   session name with no validation and passed it straight through to every tmux `-t`
