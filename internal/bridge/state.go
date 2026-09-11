@@ -162,14 +162,16 @@ func (b *Bridge) addSession(chatID int64, name, rawDir string) error {
 	return nil
 }
 
-func (b *Bridge) rollbackNewSession(chatID int64, name string) {
+func (b *Bridge) rollbackNewSession(chatID int64, name string) error {
 	b.state.Lock()
 	defer b.state.Unlock()
 	delete(b.cfg.Sessions, name)
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "err", err)
+	saveErr := config.Save(b.configPath, b.cfg)
+	if saveErr != nil {
+		b.log.Error("rollback: save config failed after session start error, entry left dangling", "session", name, "path", b.configPath, "err", saveErr)
 	}
 	if b.activeSession[chatID] == name {
 		delete(b.activeSession, chatID)
 	}
+	return saveErr
 }

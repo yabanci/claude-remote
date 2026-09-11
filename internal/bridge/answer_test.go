@@ -114,3 +114,22 @@ func TestExtractAnswerKeepsProseShapedLikeAFunctionCall(t *testing.T) {
 	assert.Equal(t, 0, answer.ToolBlocks)
 	assert.Contains(t, answer.Text, "Filter(x) возвращает true")
 }
+
+func TestExtractAnswerStripsMCPQualifiedToolCalls(t *testing.T) {
+	pane := "⏺ mcp__telegram__tg_send(chat_id: 42)\n  ⎿  sent\n\n⏺ Сообщение ушло.\n\n✻ done"
+
+	answer := bridge.ExtractAnswer(pane)
+
+	assert.Equal(t, 1, answer.ToolBlocks)
+	assert.Equal(t, "Сообщение ушло.", answer.Text)
+	assert.NotContains(t, answer.Text, "mcp__")
+}
+
+func TestExtractAnswerStripsMCPToolCallsWithHyphenatedNames(t *testing.T) {
+	pane := "⏺ mcp__plugin_context7_context7__query-docs(topic: \"gorm\")\n  ⎿  4 results\n\n⏺ Нашёл.\n\n✻ done"
+
+	answer := bridge.ExtractAnswer(pane)
+
+	assert.Equal(t, 1, answer.ToolBlocks)
+	assert.Equal(t, "Нашёл.", answer.Text)
+}

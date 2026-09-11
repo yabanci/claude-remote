@@ -15,7 +15,7 @@ const (
 	fallbackWarnMinLines = 4
 )
 
-var toolCallPattern = regexp.MustCompile(`^[A-Z][A-Za-z]*\(`)
+var toolCallPattern = regexp.MustCompile(`^([A-Z][A-Za-z]*|mcp__[A-Za-z0-9_-]+)\(`)
 
 type Answer struct {
 	Text       string

@@ -1,6 +1,7 @@
 package bridge_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -53,12 +54,47 @@ func TestDiffTailReturnsWholeCaptureWhenHistoryIsNotYetFull(t *testing.T) {
 	assert.Equal(t, after, got)
 }
 
+func TestDiffTailFollowsScrollbackShiftedByOneLine(t *testing.T) {
+	history := historyRows("line", 5000)
+	before := strings.Join(history, "\n")
+	after := strings.Join(append(append([]string{}, history[1:]...), "the reply"), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, "the reply", got)
+}
+
+func TestDiffTailFollowsScrollbackShiftedByManyLines(t *testing.T) {
+	history := historyRows("line", 5000)
+	reply := historyRows("reply", 400)
+	before := strings.Join(history, "\n")
+	after := strings.Join(append(append([]string{}, history[400:]...), reply...), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, strings.Join(reply, "\n"), got)
+}
+
+func TestDiffTailFallsBackWhenOnlyATrailingLineSurvivedTheShift(t *testing.T) {
+	before := strings.Join(append(historyRows("before line", 4999), "╭────╮"), "\n")
+	after := strings.Join(append([]string{"╭────╮"}, historyRows("after line", 4999)...), "\n")
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Contains(t, got, "/cr_peek")
+	assert.NotContains(t, got, "after line")
+}
+
 func fullHistoryPane(linePrefix string, lines int) string {
+	return strings.Join(historyRows(linePrefix, lines), "\n")
+}
+
+func historyRows(linePrefix string, lines int) []string {
 	rows := make([]string, lines)
 	for i := range rows {
 		rows[i] = fmt.Sprintf("%s %d", linePrefix, i)
 	}
-	return strings.Join(rows, "\n")
+	return rows
 }
 
 func sequenceCapture(values []string) bridge.CaptureFunc {
@@ -77,7 +113,7 @@ func TestWaitForSettleStopsOnceStable(t *testing.T) {
 	cfg := config.SettleConfig{PollIntervalMS: 5, StableRounds: 2, HardCapSeconds: 5}
 	capture := sequenceCapture([]string{"a", "b", "b", "b", "b"})
 
-	got, err := bridge.WaitForSettle(capture, cfg, nil)
+	got, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "b", got)
@@ -92,7 +128,7 @@ func TestWaitForSettleHitsHardCapWhenNeverStable(t *testing.T) {
 	}
 
 	start := time.Now()
-	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 	elapsed := time.Since(start)
 
 	require.NoError(t, err)
@@ -104,7 +140,7 @@ func TestWaitForSettlePropagatesCaptureError(t *testing.T) {
 	boom := errors.New("tmux gone")
 	capture := func() (string, error) { return "", boom }
 
-	_, err := bridge.WaitForSettle(capture, cfg, nil)
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
 
 	require.ErrorIs(t, err, boom)
 }
@@ -118,10 +154,51 @@ func TestWaitForSettleInvokesInterimCallback(t *testing.T) {
 	}
 
 	var notices []time.Duration
-	_, err := bridge.WaitForSettle(capture, cfg, func(elapsed time.Duration) {
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, func(elapsed time.Duration) {
 		notices = append(notices, elapsed)
 	})
 
 	require.NoError(t, err)
 	assert.NotEmpty(t, notices)
+}
+
+func TestWaitForSettleCountsCaptureDurationTowardTheHardCap(t *testing.T) {
+	const captureDuration = 30 * time.Millisecond
+	cfg := config.SettleConfig{PollIntervalMS: 2, StableRounds: 1000, HardCapSeconds: 1}
+	frame := 0
+	capture := func() (string, error) {
+		time.Sleep(captureDuration)
+		frame++
+		return fmt.Sprintf("frame-%d", frame), nil
+	}
+
+	start := time.Now()
+	_, err := bridge.WaitForSettle(context.Background(), capture, cfg, nil)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	naiveRounds := int64(cfg.HardCapDuration() / cfg.PollInterval())
+	naiveWallClock := time.Duration(naiveRounds) * (cfg.PollInterval() + captureDuration)
+	assert.Less(t, elapsed, naiveWallClock/4)
+	assert.GreaterOrEqual(t, elapsed, cfg.HardCapDuration()-cfg.PollInterval()-captureDuration)
+}
+
+func TestWaitForSettleReturnsAsSoonAsTheContextIsCancelled(t *testing.T) {
+	cfg := config.SettleConfig{PollIntervalMS: 20, StableRounds: 1000, HardCapSeconds: 5}
+	frame := 0
+	capture := func() (string, error) {
+		frame++
+		return fmt.Sprintf("frame-%d", frame), nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	start := time.Now()
+	_, err := bridge.WaitForSettle(ctx, capture, cfg, nil)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.Canceled, "a cancelled context must abort the poll loop, not wait out the hard cap")
+	assert.Less(t, elapsed, cfg.HardCapDuration()/2)
 }

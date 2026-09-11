@@ -36,6 +36,26 @@ func TestUploadedFileLandsInInboxAndSessionIsTold(t *testing.T) {
 		"the session should be told where the file went")
 }
 
+func TestUploadFailsGracefullyWhenGetFileErrors(t *testing.T) {
+	h := newHarness(t).startSession("main")
+	h.tg.failGetFile()
+
+	h.deliver(documentMessage("notes.txt"))
+
+	assert.Contains(t, h.lastMessage(), "не удалось получить файл")
+	assert.Empty(t, h.runner.lastSentKeys(), "a file the bridge could not fetch must never reach the session")
+}
+
+func TestUploadFailsGracefullyWhenDownloadErrors(t *testing.T) {
+	h := newHarness(t).startSession("main")
+	h.tg.failDownload()
+
+	h.deliver(documentMessage("notes.txt"))
+
+	assert.Contains(t, h.lastMessage(), "не удалось скачать файл")
+	assert.Empty(t, h.runner.lastSentKeys(), "a file the bridge could not download must never reach the session")
+}
+
 func TestUploadedFileNameCannotEscapeInbox(t *testing.T) {
 	h := newHarness(t).startSession("main")
 	sessionDir := h.sessionDir("main")

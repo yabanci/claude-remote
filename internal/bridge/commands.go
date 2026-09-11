@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -14,6 +16,16 @@ import (
 )
 
 var validSessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+const (
+	sessionNotRunningNotice = "сессия %q не запущена"
+	stopFailedNotice        = "не удалось остановить: %v"
+	startFailedRolledBack   = "сессия не запустилась, откатываю конфиг: %v"
+	startFailedRollbackKept = "сессия не запустилась (%v), и откатить конфиг не удалось (%v): запись %q осталась в %s — убери её вручную, иначе она вернётся после перезапуска"
+	pathEscapesSessionDir   = "путь %q выходит за пределы рабочей директории сессии"
+	sessionDirUnresolvable  = "не удалось разрешить рабочую директорию сессии %q: %v"
+	pathUncheckable         = "не удалось проверить путь %q: %v"
+)
 
 func commandMenu() []telegram.BotCommand {
 	return []telegram.BotCommand{
@@ -144,8 +156,11 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 	}
 
 	if err := b.runner.Start(name, dir, defaultSessionCommand); err != nil {
-		b.rollbackNewSession(chatID, name)
-		b.reply(ctx, chatID, fmt.Sprintf("сессия не запустилась, откатываю конфиг: %v", err))
+		if rollbackErr := b.rollbackNewSession(chatID, name); rollbackErr != nil {
+			b.reply(ctx, chatID, fmt.Sprintf(startFailedRollbackKept, err, rollbackErr, name, b.configPath))
+			return
+		}
+		b.reply(ctx, chatID, fmt.Sprintf(startFailedRolledBack, err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
@@ -159,11 +174,11 @@ func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
 	}
 	name = s.name
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Kill(name); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+		b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("остановлена: %s", name))
@@ -177,7 +192,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 	}
 	if b.runner.Exists(s.name) {
 		if err := b.runner.Kill(s.name); err != nil {
-			b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+			b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 			return
 		}
 	}
@@ -191,7 +206,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Interrupt(name); err != nil {
@@ -204,7 +219,7 @@ func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 
@@ -252,11 +267,33 @@ func resolveSendPath(sessionDir, arg string) (string, error) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(base, target)
 	}
-	rel, err := filepath.Rel(base, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("путь %q выходит за пределы рабочей директории сессии", arg)
+	if !isInside(base, target) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
 	}
-	return target, nil
+
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Errorf(sessionDirUnresolvable, sessionDir, err)
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return target, nil
+		}
+		return "", fmt.Errorf(pathUncheckable, arg, err)
+	}
+	if !isInside(realBase, realTarget) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
+	}
+	return realTarget, nil
+}
+
+func isInside(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (b *Bridge) cmdHelp(ctx context.Context, chatID int64) {

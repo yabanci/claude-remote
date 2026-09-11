@@ -253,7 +253,7 @@ func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) 
 
 	settle := b.settle()
 	time.Sleep(settle.ColdStartDelay())
-	if _, err := WaitForSettle(b.watchVisible(s.name), settle, nil); err != nil {
+	if _, err := WaitForSettle(ctx, b.watchVisible(s.name), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
 		return false
 	}
@@ -298,7 +298,7 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text stri
 
 	settle := b.settle()
 	time.Sleep(settle.PostSendDelay())
-	if _, err := WaitForSettle(b.watchVisible(name), settle, nil); err != nil {
+	if _, err := WaitForSettle(ctx, b.watchVisible(name), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
 		b.reportCaptureFailure(ctx, chatID, name, err)
 		return false
 	}
@@ -424,25 +424,18 @@ func (b *Bridge) replyWithMenu(ctx context.Context, chatID int64, menu Menu) {
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
 	defer cancel()
 
-	var row []telegram.InlineButton
-	for _, option := range menu.Options {
-		row = append(row, telegram.InlineButton{
-			Text:         option.Key + ". " + option.Label,
-			CallbackData: option.Key,
-		})
-	}
-
-	text := menu.Question
-	if text == "" {
-		text = "сессия ждёт выбора"
-	}
 	opts := telegram.SendOptions{
 		ReplyTo:  replyToOf(ctx),
-		Keyboard: &telegram.InlineKeyboard{Rows: [][]telegram.InlineButton{row}},
+		Keyboard: &telegram.InlineKeyboard{Rows: menu.keyboardRows()},
 	}
-	if err := b.tg.Send(sendCtx, chatID, text, opts); err != nil {
-		b.log.Error("send menu failed", "err", err)
+	err := b.tg.Send(sendCtx, chatID, menu.heading(), opts)
+	if err == nil {
+		return
 	}
+
+	b.log.Warn("sending the menu as buttons failed, falling back to a numbered text menu",
+		"err", err, "options", len(menu.Options))
+	b.reply(ctx, chatID, menu.asPlainText())
 }
 
 func (b *Bridge) replyAsDocument(ctx context.Context, chatID int64, text string) {

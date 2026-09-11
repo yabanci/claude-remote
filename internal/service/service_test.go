@@ -244,6 +244,22 @@ func TestSystemdStatusReportsStoppedWhenInactive(t *testing.T) {
 	assert.Equal(t, statusStopped, status)
 }
 
+func TestSystemdStatusReportsTransitionalStatesDistinctFromNotInstalled(t *testing.T) {
+	for _, state := range []string{"activating", "deactivating", "reloading"} {
+		t.Run(state, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runner := &fakeRunner{statusOutput: []byte(state + "\n"), statusErr: fmt.Errorf("exit status 3")}
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+			status, err := mgr.Status()
+
+			require.NoError(t, err)
+			assert.Equal(t, state, status)
+			assert.NotEqual(t, statusNotInstalled, status)
+		})
+	}
+}
+
 func TestInstallPropagatesEnableFailure(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,4 +422,12 @@ func TestSystemdRenderEscapesEmbeddedQuotes(t *testing.T) {
 	out := systemd{}.render(`/opt/weird"path/claude-remote`, "", "/usr/bin:/bin")
 
 	assert.Contains(t, out, `ExecStart="/opt/weird\"path/claude-remote" run`)
+}
+
+func TestSystemdRenderEscapesPercentSpecifiers(t *testing.T) {
+	out := systemd{}.render(`/opt/%h/claude-remote`, "", `/usr/bin:/opt/%n/bin`)
+
+	assert.Contains(t, out, `ExecStart="/opt/%%h/claude-remote" run`,
+		"an unescaped %h is expanded by systemd into the user's home directory at unit-start time")
+	assert.Contains(t, out, `Environment="PATH=/usr/bin:/opt/%%n/bin"`)
 }

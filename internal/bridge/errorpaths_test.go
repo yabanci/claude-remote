@@ -28,6 +28,7 @@ type failingRunner struct {
 	killErr      error
 	startErr     error
 	interruptErr error
+	beforeStart  func()
 }
 
 func (f *failingRunner) Kill(session string) error {
@@ -38,6 +39,9 @@ func (f *failingRunner) Kill(session string) error {
 }
 
 func (f *failingRunner) Start(session, dir, command string) error {
+	if f.beforeStart != nil {
+		f.beforeStart()
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -113,6 +117,32 @@ func TestCrNewRollsBackConfigEntryWhenStartFails(t *testing.T) {
 
 	h.send("/cr_status")
 	assert.NotContains(t, h.lastMessage(), "work", "a rolled-back session must not still be the active one")
+}
+
+func TestCrNewAdmitsWhenItsOwnRollbackCannotBeSaved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory, so the rollback's save would not fail")
+	}
+	cfg := testConfigFor(t)
+	runner := &failingRunner{fakeRunner: newFakeRunner(), startErr: errors.New("no such directory")}
+	h := newHarnessWithRunner(t, cfg, runner)
+
+	configDir := filepath.Dir(h.configPath)
+	runner.beforeStart = func() { require.NoError(t, os.Chmod(configDir, 0o500)) }
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o700) })
+
+	h.send("/cr_new work " + t.TempDir())
+
+	assert.Contains(t, h.lastMessage(), "откатить конфиг не удалось")
+	assert.Contains(t, h.lastMessage(), "work")
+	assert.NotContains(t, h.lastMessage(), "откатываю конфиг",
+		"a rollback that could not be saved must not be reported as a clean one")
+
+	require.NoError(t, os.Chmod(configDir, 0o700))
+	saved, err := config.Load(h.configPath)
+	require.NoError(t, err)
+	_, exists := saved.Sessions["work"]
+	assert.True(t, exists, "the dangling entry the user was warned about must really be on disk")
 }
 
 type offsetAwareTelegram struct {

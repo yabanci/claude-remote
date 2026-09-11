@@ -5,7 +5,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +17,7 @@ const secretToken = "7712345678:AAFAKE-TOKEN-abcdefghijklmnop"
 func TestTransportErrorNeverCarriesTheToken(t *testing.T) {
 	client := telegram.NewClient(secretToken,
 		telegram.WithBaseURL("https://api.telegram.org.invalid"),
-		telegram.WithRetryPolicy(0, func(time.Duration) {}))
+		telegram.WithMaxRetries(0))
 
 	err := client.Send(context.Background(), 1, "текст", telegram.SendOptions{})
 
@@ -43,7 +42,7 @@ func TestSendDocumentErrorNeverCarriesTheToken(t *testing.T) {
 
 	client := telegram.NewClient(secretToken,
 		telegram.WithBaseURL("https://api.telegram.org.invalid"),
-		telegram.WithRetryPolicy(0, func(time.Duration) {}))
+		telegram.WithMaxRetries(0))
 
 	err := client.SendDocument(context.Background(), 1, path)
 

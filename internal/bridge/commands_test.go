@@ -227,3 +227,41 @@ func TestCrKillStillStopsAConfiguredSession(t *testing.T) {
 	assert.Contains(t, h.lastMessage(), "остановлена")
 	assert.False(t, h.runner.Exists("main"))
 }
+
+func TestCrSendRejectsSymlinkInsideSessionDirPointingOutside(t *testing.T) {
+	h := newHarness(t)
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "id_rsa"), []byte("private key"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(h.sessionDir("main"), "data")))
+
+	h.send("/cr_send data/id_rsa")
+
+	assert.Contains(t, h.lastMessage(), "выходит за пределы")
+	assert.Empty(t, h.tg.documents())
+}
+
+func TestCrSendRejectsSymlinkedFileInsideSessionDirPointingOutside(t *testing.T) {
+	h := newHarness(t)
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "id_rsa")
+	require.NoError(t, os.WriteFile(secret, []byte("private key"), 0o600))
+	require.NoError(t, os.Symlink(secret, filepath.Join(h.sessionDir("main"), "key.txt")))
+
+	h.send("/cr_send key.txt")
+
+	assert.Contains(t, h.lastMessage(), "выходит за пределы")
+	assert.Empty(t, h.tg.documents())
+}
+
+func TestCrSendFollowsSymlinksThatStayInsideSessionDir(t *testing.T) {
+	h := newHarness(t)
+	dir := h.sessionDir("main")
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "out"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "out", "report.txt"), []byte("body"), 0o600))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "out"), filepath.Join(dir, "latest")))
+
+	h.send("/cr_send latest/report.txt")
+
+	assert.Equal(t, []string{"report.txt"}, h.tg.documents())
+	assert.Empty(t, h.tg.messages())
+}
