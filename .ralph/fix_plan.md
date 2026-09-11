@@ -435,17 +435,22 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   on cancellation. Test that a cancelled context stops both well before their respective
   hard caps.
 
-- [ ] **Fix `/cr_send`'s containment check to survive a symlink inside the session
+- [x] **Fix `/cr_send`'s containment check to survive a symlink inside the session
   directory.** `internal/bridge/commands.go`'s `resolveSendPath` (from `330a8b7`, the
-  original path-traversal fix) is lexical-only — `filepath.Clean`/`filepath.Rel`, no
-  `filepath.EvalSymlinks`. A symlink placed inside the session directory that points
-  outside it (e.g. `<session dir>/data -> ~/.ssh`) passes the lexical check (`data/id_rsa`
-  contains no `..`) and `SendDocument` follows the symlink when it opens the resolved path,
-  uploading whatever it points at. This is owner-only reachable (the same person could just
-  ask the live session to cat the file), but the command's own description claims full
-  containment, which this doesn't deliver. Resolve symlinks (`filepath.EvalSymlinks` on the
-  final path, or check it stays within the session dir after resolution) before allowing the
-  read. Test with a symlink inside the session dir pointing outside it.
+  original path-traversal fix) was lexical-only — `filepath.Clean`/`filepath.Rel`, no
+  `filepath.EvalSymlinks`. A symlink placed inside the session directory that pointed
+  outside it (`<session dir>/data -> ~/.ssh`) produced a relative path containing no `..`,
+  passed the check, and `SendDocument` followed it when opening the file, uploading whatever
+  it pointed at. Owner-only reachable, but the command's description promises the session
+  directory is a hard boundary. `resolveSendPath` now keeps the lexical `filepath.Rel` test
+  as a cheap first gate (extracted into `isInside`, now used twice) and then re-runs it on
+  the `filepath.EvalSymlinks`-resolved base and target, returning the resolved target so the
+  file that gets opened is the one that was checked. A target that does not exist
+  (`fs.ErrNotExist` from `EvalSymlinks`) still returns the lexical path, so a typo keeps
+  producing the plain "file not found" reply instead of a misleading containment error.
+  Tested three ways: a directory symlink pointing outside (`data -> outside`), a file
+  symlink pointing outside (`key.txt -> outside/id_rsa`), and a symlink that stays inside
+  (`latest -> out`), which must still be followed and delivered.
 
 - [ ] **Escape `%` in the generated systemd unit, not just `\` and `"`.**
   `internal/service/platform.go`'s `systemdEscaper` (from `ea6cb4e`) escapes backslash and
