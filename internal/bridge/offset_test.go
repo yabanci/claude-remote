@@ -62,3 +62,14 @@ func TestOffsetStoreLoadWarnsOnNonMissingReadError(t *testing.T) {
 	assert.Equal(t, int64(0), store.load())
 	assert.Contains(t, buf.String(), "offset file read failed")
 }
+
+func TestOffsetStoreLoadFallsBackToZeroOnCorruptedContent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "offset.txt"), []byte("not-a-number"), 0o600))
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	store := newOffsetStore(dir, logger)
+
+	assert.Equal(t, int64(0), store.load())
+	assert.Contains(t, buf.String(), "offset file is unreadable")
+}
