@@ -33,6 +33,67 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   dispatch wiring, `internal/bridge/state.go`, or `internal/bridge/harness_test.go`'s
   `awaitStop`/shutdown helpers in this pass — those are being edited live outside this loop.
 
+## WIP audit findings (11.09.2026) — for whoever finishes `/cr_interrupt` by hand, not for ralph
+
+A fresh audit of the uncommitted concurrent-dispatch WIP (`bridge.go`'s `dispatch`, `state.go`'s
+`sessionLocks`/`bindOwner`) found four real bugs the design introduces. None of these existed
+before the WIP — the old sequential `Run()` had neither. Fix these before merging; do not treat
+the WIP as done just because `go test ./... -race` is green — every one of these is a *logical*
+race the Go race detector cannot see (every individual field access is correctly mutex-protected,
+the bug is which lock is taken, or that nothing recovers a panic).
+
+1. **Critical, security — bootstrap owner-binding TOCTOU.** `state.go`'s `bindOwner` never
+   re-checks `NeedsBootstrap()` under its own lock before writing `cfg.AllowedUsers`/
+   `AllowedChats` to disk. Before this WIP, updates were processed one at a time, so "first
+   sender wins" was actually first. Now `dispatch()` runs a goroutine per update, so two
+   messages landing in the same `GetUpdates` batch on a fresh, unconfigured bot race to bind
+   ownership — whichever goroutine's `bindOwner` takes the lock *last* wins, even if it's not
+   who actually sent first. An attacker who knows the bot's `@username` (public) and sends a
+   message around the same time as the real owner's first message can hijack ownership: full
+   control of the live `claude` session (arbitrary commands via chat, `/cr_send` exfiltration),
+   legitimate owner locked out. Fix: gate the whole "check NeedsBootstrap → bind → save" sequence
+   under one lock held for its entire duration, not just around the final write.
+
+2. **Blocking — `inSessionTurn` locks the wrong session.** `state.go:67-72` computes the mutex
+   from `b.activeSessionName(chatID)` — the *calling chat's* active session — before the
+   command's own argument is parsed. `cmdRestart` (`commands.go:172-189`) accepts an explicit
+   `<name>` that can differ from the caller's active session and is not in `lockFreeCommands`,
+   so it's presumed serialized — but it locks the wrong key. Two chats sharing one `Sessions`
+   pool (a supported config shape): chat B mid-turn on "work" holds `turns.of("work")`; chat A
+   sends `/cr_restart work`, acquires `turns.of("main")` (chat A's own active session, unrelated)
+   instead, and kills+restarts "work" out from under chat B's in-flight turn with no mutual
+   exclusion at all. Fix: resolve the target session name first, lock on *that*, not on the
+   caller's active session.
+
+3. **Blocking — `/cr_kill` + same-name auto-restart races a still-polling `WaitForSettle`.**
+   `/cr_kill` is intentionally lock-free (so it works during a stuck reply), but nothing ties a
+   `WaitForSettle`/`CapturePane` poll loop to a specific tmux process instance — it keys purely
+   on the session name string. Kill a session while a turn is still polling it, then send a new
+   message to the same name: `ensureRunning` auto-starts a fresh tmux process under the identical
+   name, and the still-running old poll loop transparently starts reading the *new* session's
+   boot screen, reports it "settled," and delivers that garbage as the answer to the original
+   question. Fix needs some form of generation/instance id tying a poll loop to the specific
+   process it started watching, so it can detect the session was replaced out from under it and
+   bail instead of reporting success on unrelated content.
+
+4. **High — unrecovered panic in a dispatched goroutine kills the whole process, and loses the
+   whole in-flight batch, not just one message.** No `recover()` exists anywhere in the codebase.
+   `bridge.go`'s per-update loop commits the offset for *every* update in a fetched batch
+   synchronously before any dispatched goroutine (`go func(){...}()`) has done any work. A panic
+   in one goroutine takes the whole process down; since the batch's offsets were already
+   persisted, none of those messages get redelivered on restart. This is a real widening of the
+   blast radius versus the old serial version, where a panic on update N could only have
+   committed N's own offset early. Fix: `recover()` per dispatched goroutine at minimum: reply
+   with a generic error and log the panic instead of crashing the process.
+
+Also: this worktree's `internal/bridge/harness_test.go` still has the exact three-part race that
+`ralph-batch2`'s copy of the same file had fixed in commit `207cb0d` on that branch (this WIP
+forked before that fix landed) — `deliver()` replaces `h.tg.updates` instead of appending,
+`nextCall` isn't gated correctly, `runUntilReplies` compares an absolute count. It already
+produces a false-positive pass today (`TestCrNewRollsBackConfigEntryWhenStartFails` never
+actually delivers its second `send()`). When reconciling this branch with `ralph-batch2`, take
+`ralph-batch2`'s `harness_test.go` fix, don't let this branch's older version win the merge.
+
 ## Tasks
 
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and
