@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,17 +118,23 @@ func TestCmdRunRejectsInvalidConfig(t *testing.T) {
 }
 
 func TestCmdServiceRequiresSubcommand(t *testing.T) {
-	err := cmdService(nil)
+	var stdout bytes.Buffer
+
+	err := cmdService(nil, &stdout)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "usage")
+	assert.Empty(t, stdout.String())
 }
 
 func TestCmdServiceRejectsUnknownSubcommand(t *testing.T) {
-	err := cmdService([]string{"frobnicate"})
+	var stdout bytes.Buffer
+
+	err := cmdService([]string{"frobnicate"}, &stdout)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown service subcommand")
+	assert.Empty(t, stdout.String())
 }
 
 func TestServiceInstallRefusesWithoutConfig(t *testing.T) {
@@ -251,4 +258,104 @@ func TestServiceInstallAcceptsAWorkingConfig(t *testing.T) {
 	require.NoError(t, config.Save(configPath, cfg))
 
 	assert.NoError(t, verifyConfigBeforeInstall([]string{"-config", configPath}))
+}
+
+type fakeServiceManager struct {
+	status    string
+	statusErr error
+	failWith  error
+	calls     []string
+}
+
+func (f *fakeServiceManager) Install() error {
+	f.calls = append(f.calls, "install")
+	return f.failWith
+}
+
+func (f *fakeServiceManager) Uninstall() error {
+	f.calls = append(f.calls, "uninstall")
+	return f.failWith
+}
+
+func (f *fakeServiceManager) Status() (string, error) {
+	f.calls = append(f.calls, "status")
+	return f.status, f.statusErr
+}
+
+func writableConfigPath(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = "123:abc"
+	cfg.AllowedUsers = []int64{1}
+	require.NoError(t, config.Save(path, cfg))
+	return path
+}
+
+func TestRunServiceInstallWritesConfirmationToTheInjectedWriter(t *testing.T) {
+	var stdout bytes.Buffer
+	mgr := &fakeServiceManager{}
+
+	err := runService([]string{"install", "-config", writableConfigPath(t)}, mgr, &stdout)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"install"}, mgr.calls)
+	assert.Contains(t, stdout.String(), "service installed and started")
+}
+
+func TestRunServiceUninstallWritesConfirmationToTheInjectedWriter(t *testing.T) {
+	var stdout bytes.Buffer
+	mgr := &fakeServiceManager{}
+
+	err := runService([]string{"uninstall"}, mgr, &stdout)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"uninstall"}, mgr.calls)
+	assert.Contains(t, stdout.String(), "service uninstalled")
+}
+
+func TestRunServiceStatusWritesTrimmedStatusToTheInjectedWriter(t *testing.T) {
+	var stdout bytes.Buffer
+	mgr := &fakeServiceManager{status: "\n  running (pid 4242)  \n\n"}
+
+	err := runService([]string{"status"}, mgr, &stdout)
+
+	require.NoError(t, err)
+	assert.Equal(t, "running (pid 4242)\n", stdout.String())
+}
+
+func TestRunServiceWritesNothingWhenTheManagerFails(t *testing.T) {
+	for _, subcommand := range []string{"install", "uninstall"} {
+		var stdout bytes.Buffer
+		mgr := &fakeServiceManager{failWith: errors.New("launchctl exploded")}
+
+		err := runService([]string{subcommand, "-config", writableConfigPath(t)}, mgr, &stdout)
+
+		require.Error(t, err, "%s should surface the manager error", subcommand)
+		assert.Contains(t, err.Error(), "launchctl exploded")
+		assert.Empty(t, stdout.String(), "%s must not claim success after a failure", subcommand)
+	}
+}
+
+func TestRunServiceStatusReportsTheManagerError(t *testing.T) {
+	var stdout bytes.Buffer
+	mgr := &fakeServiceManager{statusErr: errors.New("launchctl exploded")}
+
+	err := runService([]string{"status"}, mgr, &stdout)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "service status")
+	assert.Empty(t, stdout.String())
+}
+
+func TestRunServiceInstallRefusesBeforeTouchingTheManager(t *testing.T) {
+	var stdout bytes.Buffer
+	mgr := &fakeServiceManager{}
+	missing := filepath.Join(t.TempDir(), "absent.yaml")
+
+	err := runService([]string{"install", "-config", missing}, mgr, &stdout)
+
+	require.Error(t, err)
+	assert.Empty(t, mgr.calls, "a service that cannot start must never reach Install")
+	assert.Empty(t, stdout.String())
 }

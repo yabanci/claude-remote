@@ -262,11 +262,23 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   sleeps 30ms against a 2ms poll interval and a 1s hard cap: the call now returns in ~1s
   where the poll-interval sum predicted (and the old code took) 16.7s.
 
-- [ ] **Route `cmdService`'s output through the injected writer.** `cmdService`'s success
-  paths call `fmt.Println` directly instead of using the `stdout` writer that `run()`
-  threads through every other subcommand — its output is untestable by any caller of
-  `run()`. Thread `stdout` into `cmdService` and use it. Test by asserting on the captured
-  buffer the way `main_test.go`'s other `TestRun*` cases already do.
+- [x] **Route `cmdService`'s output through the injected writer.** `cmdService`'s success
+  paths called `fmt.Println` directly instead of using the `stdout` writer that `run()`
+  threads through every other subcommand, so nothing a caller of `run()` could see proved
+  the confirmation lines were ever printed — or, worse, that they were *not* printed after
+  a failure. Threading `stdout` alone was not enough to test it: `cmdService` calls
+  `os.Executable()` and `service.NewManager` before reaching the switch, so any test of the
+  success paths would install a real launchd/systemd service. Split the resolution from the
+  dispatch — `cmdService` still resolves the executable and builds the real manager, then
+  delegates to `runService(args, mgr, stdout)`, which takes the manager through a new
+  `serviceManager` interface declared at the call site like `bridge.Runner` and
+  `service.CommandRunner`. All three success paths now write to the injected writer. Tested
+  with a `fakeServiceManager` that records its calls: install, uninstall and status each
+  write their line to the buffer (status still trimmed), a manager error on any of the three
+  surfaces the error and writes *nothing* — the regression that would have let `uninstall`
+  print "service uninstalled" over a still-running service — and a missing `-config` on
+  install is rejected before `Install()` is ever reached. Coverage of
+  `cmd/claude-remote` is 92.9%, up from 81.2%.
 
 - [x] **Fix `DiffTail`'s scrollback-eviction case.** `DiffTail`'s common-prefix walk assumed
   the "before" and "after" pane captures start at the same line; once tmux's bounded

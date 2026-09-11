@@ -39,7 +39,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		err = cmdRun(args[1:])
 	case "service":
-		err = cmdService(args[1:])
+		err = cmdService(args[1:], stdout)
 	case "version":
 		_, _ = fmt.Fprintln(stdout, version)
 	case "help", "-h", "--help":
@@ -123,7 +123,13 @@ func runBridge(ctx context.Context, args []string) error {
 	return nil
 }
 
-func cmdService(args []string) error {
+type serviceManager interface {
+	Install() error
+	Uninstall() error
+	Status() (string, error)
+}
+
+func cmdService(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: claude-remote service <install|uninstall|status>")
 	}
@@ -132,8 +138,11 @@ func cmdService(args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
-	mgr := service.NewManager(execPath)
 
+	return runService(args, service.NewManager(execPath), stdout)
+}
+
+func runService(args []string, mgr serviceManager, stdout io.Writer) error {
 	switch args[0] {
 	case "install":
 		if err := verifyConfigBeforeInstall(args); err != nil {
@@ -142,18 +151,18 @@ func cmdService(args []string) error {
 		if err := mgr.Install(); err != nil {
 			return fmt.Errorf("install service: %w", err)
 		}
-		fmt.Println("service installed and started")
+		_, _ = fmt.Fprintln(stdout, "service installed and started")
 	case "uninstall":
 		if err := mgr.Uninstall(); err != nil {
 			return fmt.Errorf("uninstall service: %w", err)
 		}
-		fmt.Println("service uninstalled")
+		_, _ = fmt.Fprintln(stdout, "service uninstalled")
 	case "status":
 		status, err := mgr.Status()
 		if err != nil {
 			return fmt.Errorf("service status: %w", err)
 		}
-		fmt.Println(strings.TrimSpace(status))
+		_, _ = fmt.Fprintln(stdout, strings.TrimSpace(status))
 	default:
 		return fmt.Errorf("unknown service subcommand %q", args[0])
 	}
