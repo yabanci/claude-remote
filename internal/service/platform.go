@@ -172,6 +172,8 @@ func (systemd) status(runner CommandRunner) (string, error) {
 		return statusFailed, nil
 	case "inactive":
 		return statusStopped, nil
+	case "activating", "deactivating", "reloading":
+		return state, nil
 	default:
 		return statusNotInstalled, nil
 	}

@@ -244,6 +244,22 @@ func TestSystemdStatusReportsStoppedWhenInactive(t *testing.T) {
 	assert.Equal(t, statusStopped, status)
 }
 
+func TestSystemdStatusReportsTransitionalStatesDistinctFromNotInstalled(t *testing.T) {
+	for _, state := range []string{"activating", "deactivating", "reloading"} {
+		t.Run(state, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			runner := &fakeRunner{statusOutput: []byte(state + "\n"), statusErr: fmt.Errorf("exit status 3")}
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+			status, err := mgr.Status()
+
+			require.NoError(t, err)
+			assert.Equal(t, state, status)
+			assert.NotEqual(t, statusNotInstalled, status)
+		})
+	}
+}
+
 func TestInstallPropagatesEnableFailure(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
