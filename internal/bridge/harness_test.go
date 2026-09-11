@@ -120,17 +120,19 @@ func (f *fakeRunner) pane(session string) string {
 }
 
 type fakeTelegram struct {
-	mu           sync.Mutex
-	sent         []string
-	docs         []string
-	keyboardsL   [][]string
-	keyboardRows [][][]string
-	callbacks    []string
-	typing       int
-	replyTos     []int64
-	updates      []telegram.Update
-	nextCall     int
-	rejectMarkup bool
+	mu             sync.Mutex
+	sent           []string
+	docs           []string
+	keyboardsL     [][]string
+	keyboardRows   [][][]string
+	callbacks      []string
+	typing         int
+	replyTos       []int64
+	updates        []telegram.Update
+	nextCall       int
+	rejectMarkup   bool
+	rejectGetFile  bool
+	rejectDownload bool
 }
 
 func (f *fakeTelegram) keyboards() [][]string {
@@ -152,6 +154,18 @@ func (f *fakeTelegram) failEveryKeyboardSend() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rejectMarkup = true
+}
+
+func (f *fakeTelegram) failGetFile() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectGetFile = true
+}
+
+func (f *fakeTelegram) failDownload() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectDownload = true
 }
 
 func (f *fakeTelegram) answeredCallbacks() []string {
@@ -201,14 +215,28 @@ func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Reque
 		var result []telegram.Update
 		if f.nextCall < len(f.updates) {
 			result = []telegram.Update{f.updates[f.nextCall]}
+			f.nextCall++
 		}
-		f.nextCall++
 		f.mu.Unlock()
 		data, _ := json.Marshal(result)
 		_, _ = fmt.Fprintf(w, `{"ok":true,"result":%s}`, data)
 	case strings.Contains(r.URL.Path, "getFile"):
+		f.mu.Lock()
+		reject := f.rejectGetFile
+		f.mu.Unlock()
+		if reject {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"file not found"}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"file_id":"fid","file_path":"documents/upload.txt"}}`)
 	case strings.Contains(r.URL.Path, "/file/bot"):
+		f.mu.Lock()
+		reject := f.rejectDownload
+		f.mu.Unlock()
+		if reject {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = fmt.Fprint(w, "uploaded file body")
 	case strings.Contains(r.URL.Path, "sendChatAction"):
 		f.mu.Lock()
@@ -377,14 +405,17 @@ func (h *harness) send(text string) {
 
 func (h *harness) deliver(msg telegram.Message) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &msg}}
+	h.tg.updates = append(h.tg.updates, telegram.Update{
+		UpdateID: int64(len(h.tg.updates) + 1),
+		Message:  &msg,
+	})
 	h.runUntilReply()
 }
 
 func (h *harness) deliverCallback(data string) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{
-		UpdateID: 1,
+	h.tg.updates = append(h.tg.updates, telegram.Update{
+		UpdateID: int64(len(h.tg.updates) + 1),
 		CallbackQuery: &telegram.CallbackQuery{
 			ID:   "cb-1",
 			From: &telegram.User{ID: testUserID},
@@ -394,7 +425,7 @@ func (h *harness) deliverCallback(data string) {
 				Chat:      telegram.Chat{ID: 1},
 			},
 		},
-	}}
+	})
 	h.runUntilReplies(1)
 }
 
@@ -405,6 +436,7 @@ func (h *harness) runUntilReply() {
 
 func (h *harness) runUntilReplies(want int) {
 	h.t.Helper()
+	before := h.tg.replyCount()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -412,7 +444,7 @@ func (h *harness) runUntilReplies(want int) {
 		_ = h.bridge.Run(ctx)
 	}()
 
-	waitUntil(h.t, func() bool { return h.tg.replyCount() >= want })
+	waitUntil(h.t, func() bool { return h.tg.replyCount() >= before+want })
 	cancel()
 	h.awaitStop(done)
 }
