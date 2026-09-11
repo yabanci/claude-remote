@@ -2,7 +2,9 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,6 +22,9 @@ const (
 	stopFailedNotice        = "не удалось остановить: %v"
 	startFailedRolledBack   = "сессия не запустилась, откатываю конфиг: %v"
 	startFailedRollbackKept = "сессия не запустилась (%v), и откатить конфиг не удалось (%v): запись %q осталась в %s — убери её вручную, иначе она вернётся после перезапуска"
+	pathEscapesSessionDir   = "путь %q выходит за пределы рабочей директории сессии"
+	sessionDirUnresolvable  = "не удалось разрешить рабочую директорию сессии %q: %v"
+	pathUncheckable         = "не удалось проверить путь %q: %v"
 )
 
 func commandMenu() []telegram.BotCommand {
@@ -280,11 +285,33 @@ func resolveSendPath(sessionDir, arg string) (string, error) {
 	if !filepath.IsAbs(target) {
 		target = filepath.Join(base, target)
 	}
-	rel, err := filepath.Rel(base, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("путь %q выходит за пределы рабочей директории сессии", arg)
+	if !isInside(base, target) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
 	}
-	return target, nil
+
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Errorf(sessionDirUnresolvable, sessionDir, err)
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return target, nil
+		}
+		return "", fmt.Errorf(pathUncheckable, arg, err)
+	}
+	if !isInside(realBase, realTarget) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
+	}
+	return realTarget, nil
+}
+
+func isInside(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (b *Bridge) cmdHelp(ctx context.Context, chatID int64) {
