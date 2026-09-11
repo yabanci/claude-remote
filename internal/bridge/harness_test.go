@@ -262,6 +262,11 @@ func testConfigFor(t *testing.T) config.Config {
 	return cfg
 }
 
+func newTestTelegramClient(baseURL string) *telegram.Client {
+	return telegram.NewClient("test-token", telegram.WithBaseURL(baseURL),
+		telegram.WithRetryPolicy(0, func(time.Duration) {}))
+}
+
 func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner) *harness {
 	t.Helper()
 
@@ -273,7 +278,7 @@ func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,
@@ -310,7 +315,7 @@ func newHarness(t *testing.T, tweaks ...func(*config.Config)) *harness {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	runner := newFakeRunner()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,

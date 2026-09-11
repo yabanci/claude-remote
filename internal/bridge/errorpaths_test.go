@@ -167,7 +167,7 @@ func TestARestartedBridgeDoesNotReplayHandledMessages(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 
 	runOnce := func() {
-		tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+		tg := newTestTelegramClient(server.URL)
 		b := bridge.New(cfg, configPath, tg, runner, logger, stateDir)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -218,7 +218,7 @@ func TestAnUnwritableStateDirDoesNotStopTheBridgeAnswering(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	b := bridge.New(cfg, filepath.Join(t.TempDir(), "config.yaml"), tg, runner, logger, blocked)
 
