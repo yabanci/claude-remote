@@ -15,6 +15,11 @@ import (
 
 var validSessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+const (
+	sessionNotRunningNotice = "сессия %q не запущена"
+	stopFailedNotice        = "не удалось остановить: %v"
+)
+
 func commandMenu() []telegram.BotCommand {
 	return []telegram.BotCommand{
 		{Command: "cr_status", Description: "статус текущей и всех сессий"},
@@ -175,11 +180,11 @@ func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
 	}
 	name = s.name
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Kill(name); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+		b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("остановлена: %s", name))
@@ -193,7 +198,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 	}
 	if b.runner.Exists(s.name) {
 		if err := b.runner.Kill(s.name); err != nil {
-			b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+			b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 			return
 		}
 	}
@@ -207,7 +212,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Interrupt(name); err != nil {
@@ -220,7 +225,7 @@ func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 

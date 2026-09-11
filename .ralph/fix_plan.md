@@ -327,12 +327,20 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   inject a save failure) and assert the bridge does *not* set `b.cfg` to the candidate and
   replies with the refusal message.
 
-- [ ] **De-duplicate repeated error strings.** `"сессия %q не запущена"` is written out
-  identically in `cmdKill`, `cmdInterrupt`, and `cmdPeek`; `"не удалось прочитать экран
-  сессии: %v"` is duplicated between `reportCaptureFailure` and `cmdPeek` (resolved
-  incidentally by the `/cr_peek` task above, but check); `"не удалось остановить: %v"` is
-  duplicated between `cmdKill` and `cmdRestart`. Extract shared helpers/constants so each
-  message is written once.
+- [x] **De-duplicate repeated error strings.** `"сессия %q не запущена"` was written out
+  identically in `cmdKill`, `cmdInterrupt` and `cmdPeek`, and `"не удалось остановить: %v"`
+  in `cmdKill` and `cmdRestart` — five hand-copied literals that nothing kept in sync, so
+  rewording one command's message silently left the others saying something different for
+  the same condition. Extracted them as package-level constants next to `validSessionName`
+  in `commands.go` (`sessionNotRunningNotice`, `stopFailedNotice`), following the format-
+  string-constant convention `interim.go` already uses. `"не удалось прочитать экран
+  сессии: %v"` was checked as the task asked: it is down to a single occurrence in
+  `reportCaptureFailure`, the `/cr_peek` task having removed the copy, so it stays inline.
+  Tests are in a new `messages_test.go` and assert the property the constants buy rather
+  than the text: `/cr_kill`, `/cr_interrupt` and `/cr_peek` must produce a byte-identical
+  message for a stopped session, and `/cr_kill` and `/cr_restart` the same for a failed
+  stop. Both fail if any one call site is reworded on its own (verified by diverging
+  `cmdPeek`'s and `cmdRestart`'s text and watching each test fail).
 
 - [ ] **Name the `/rc` chrome filter in `clean.go`.** `isChrome()` matches the exact
   literal `"/rc"` with nothing in the source explaining what it strips or why — it's the
