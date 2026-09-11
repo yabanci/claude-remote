@@ -369,3 +369,98 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   literal `"/rc"` with nothing in the source explaining what it strips or why — it's the
   tail of the Claude Code CLI's statusline. Give it a named constant with a name that says
   what it is, so a future reader doesn't have to reverse-engineer it from test fixtures.
+
+## Round 3 — findings from the 11.09.2026 full re-audit
+
+- [ ] **Fix `DiffTail`'s scrollback-eviction detector — it false-positives once the pane
+  history fills up, not just on genuine eviction.** `internal/bridge/tail.go`
+  (`scrollbackLikelyEvicted`) compares `before`/`after` by common *prefix* length. Once a
+  session's tmux history hits its 5000-line cap (`tmux.HistoryLimit`), every single new line
+  of output shifts the whole buffer by one — `after[0]` becomes `before[1]`, etc. — so
+  `beforeLines[0] != afterLines[0]` on the very first comparison and `common` reads 0 even
+  though 4999/5000 lines are identical. The detector then reports "evicted" and returns the
+  static "ответ недоступен, экран прокрутился слишком далеко" fallback instead of the real
+  reply — for essentially every turn that reaches `DiffTail` (i.e. whenever
+  `TailAfterPrompt` can't find the echoed prompt line) once any long-lived session's
+  scrollback has filled once. The existing test (`settle_test.go`) only exercises two
+  buffers with completely different content, which never exercises the single-line-shift
+  case. Fix: compare content, not raw prefix position — e.g. find `before`'s tail as a
+  substring/suffix-overlap of `after` rather than requiring index-0 alignment, so a
+  one-line (or N-line) shift is recognized as "mostly the same" instead of "fully evicted."
+  Test with two captures that are the same 5000-line buffer shifted by exactly one line.
+
+- [ ] **Make `toolCallPattern` recognize MCP-qualified tool-call lines.**
+  `internal/bridge/answer.go`'s `toolCallPattern` (`^[A-Z][A-Za-z]*\(`) requires an
+  uppercase first letter and only letters before the paren. MCP tool names are formatted
+  `mcp__<server>__<tool>(...)` — lowercase, with underscores — so a line invoking an MCP
+  tool never matches, and instead of being stripped the way `Bash(...)`/`Read(...)` are, it
+  leaks into the extracted answer as if it were prose. Broaden the pattern (or add a second
+  one) to also match the `mcp__` prefix shape. Test with a fixture line shaped like a real
+  MCP tool call, asserting it's excluded from the extracted answer the same way built-in
+  tool calls are.
+
+- [ ] **Make `systemd.status()` handle transitional unit states, not just
+  active/failed/inactive.** `internal/service/platform.go`'s `systemd.status()` (rewritten
+  in `037ae0d` specifically to stop collapsing real states into "not installed") only
+  special-cases `"failed"` and `"inactive"`; any other real `systemctl is-active` output
+  (`"activating"`, `"deactivating"`, `"reloading"` — all reachable mid-restart, which the
+  unit's own `Restart=on-failure` triggers routinely) falls through to `statusNotInstalled`.
+  During a crash loop, `claude-remote service status` reports "not installed" for a service
+  that is very much installed — reproducing, for the states this exact fix was meant to
+  cover, the bug it was written to close. Test with `statusOutput` set to `"activating"`
+  and `"deactivating"`, asserting neither reports not-installed.
+
+- [ ] **Tell the user honestly when `/cr_new`'s rollback itself fails to save.**
+  `internal/bridge/commands.go`'s `rollbackNewSession` calls `config.Save` a second time (to
+  remove the just-added entry) and only logs if that second save fails — but `cmdNew`
+  unconditionally replies "откатываю конфиг" regardless of whether the rollback's own save
+  actually succeeded. A transient disk/permission failure between the two saves leaves
+  `config.yaml` on disk with a dangling session entry pointing at a session that was never
+  started, while the user is told it was cleaned up; a restart reloads the stale entry —
+  exactly the bug class `d03d9f1` (the original rollback fix) was written to eliminate,
+  reintroduced whenever the rollback's own persistence fails. Test by making the *second*
+  `config.Save` call fail while the first (creating the entry) succeeds, asserting the
+  user's reply reflects the failure and doesn't claim a clean rollback.
+
+- [ ] **Give `WaitForSettle` a `context.Context` so shutdown isn't blocked on it for up to
+  `hard_cap_seconds`.** Neither `internal/bridge/settle.go`'s `WaitForSettle` nor
+  `internal/telegram/client.go`'s retry loop in `call()` ever check `ctx.Err()` — the retry
+  loop's `c.sleep(wait)` runs to completion regardless of cancellation, and `WaitForSettle`'s
+  only exit conditions are `stableRounds` reached or the hard cap elapsing (default 1200s).
+  Combined with `main.go`'s `signal.NotifyContext` on SIGTERM: if a shutdown signal arrives
+  while a turn is genuinely busy, the process can't honor it until the turn settles or 20
+  minutes pass, and the process manager's own stop-timeout will almost certainly SIGKILL it
+  first, losing the in-flight reply with no log trail. Thread a context through both; select
+  on `ctx.Done()` in the retry sleep and in `WaitForSettle`'s poll loop, returning promptly
+  on cancellation. Test that a cancelled context stops both well before their respective
+  hard caps.
+
+- [ ] **Fix `/cr_send`'s containment check to survive a symlink inside the session
+  directory.** `internal/bridge/commands.go`'s `resolveSendPath` (from `330a8b7`, the
+  original path-traversal fix) is lexical-only — `filepath.Clean`/`filepath.Rel`, no
+  `filepath.EvalSymlinks`. A symlink placed inside the session directory that points
+  outside it (e.g. `<session dir>/data -> ~/.ssh`) passes the lexical check (`data/id_rsa`
+  contains no `..`) and `SendDocument` follows the symlink when it opens the resolved path,
+  uploading whatever it points at. This is owner-only reachable (the same person could just
+  ask the live session to cat the file), but the command's own description claims full
+  containment, which this doesn't deliver. Resolve symlinks (`filepath.EvalSymlinks` on the
+  final path, or check it stays within the session dir after resolution) before allowing the
+  read. Test with a symlink inside the session dir pointing outside it.
+
+- [ ] **Escape `%` in the generated systemd unit, not just `\` and `"`.**
+  `internal/service/platform.go`'s `systemdEscaper` (from `ea6cb4e`) escapes backslash and
+  double-quote but not `%`, and systemd expands `%h`/`%n`/`%i`-style specifiers in
+  `Environment=`/`ExecStart=` lines. An exec path or `$PATH` value containing a literal
+  `%`-specifier sequence gets silently mis-expanded by systemd at unit-start time instead of
+  being treated as literal text. Escape `%` (systemd's own convention is `%%`) alongside the
+  existing characters. Test with a path containing a literal `%h`.
+
+- [ ] **Make `sendAwaiting` append to `h.tg.updates` like `deliver`/`deliverCallback` do,
+  not replace it.** `internal/bridge/harness_test.go`'s `sendAwaiting` still does
+  `h.tg.updates = []telegram.Update{...}` — the exact pattern `deliver`/`deliverCallback`
+  were fixed away from in `207cb0d`. It doesn't fire today only because every current call
+  site uses it as the sole/first delivery on a fresh harness, but it's a live landmine for
+  the next test that calls `send()`/`deliver()` before `sendAwaiting()` on the same harness:
+  the second call's queued update would silently never be delivered, the same failure mode
+  `207cb0d` fixed everywhere else. Fix it the same way: append with a computed `UpdateID`
+  instead of replacing the slice.
