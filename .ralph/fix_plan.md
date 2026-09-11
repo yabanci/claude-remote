@@ -314,19 +314,19 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   both tests fail, the first because the message is forwarded into a session that never
   started.
 
-- [ ] **Make the `/cr_use` test verify actual routing, not just the reply text.**
+- [x] **Make the `/cr_use` test verify actual routing, not just the reply text.**
   `TestCrUseSwitchesActiveSession` only asserts the confirmation text contains the session
   name; it never sends a follow-up message and checks which session's fake runner
   received it. Extend it to send a message after switching and assert it reached the
   newly-active session's runner, not the default one.
 
-- [ ] **Cover `handleUpload`'s `GetFile`/`DownloadFile` failure branches.** The fake
+- [x] **Cover `handleUpload`'s `GetFile`/`DownloadFile` failure branches.** The fake
   Telegram test double always returns success for `getFile` and the file-download
   endpoint; no test makes either fail. Add cases where the fake returns an error/failure
   for each, asserting the user gets a sensible reply rather than a swallowed or malformed
   error.
 
-- [ ] **Cover `offsetStore.load()`'s corrupted-file fallback.** No test exercises the
+- [x] **Cover `offsetStore.load()`'s corrupted-file fallback.** No test exercises the
   branch where `offset.txt` exists but contains non-numeric garbage (the `strconv.ParseInt`
   failure path). Add one, asserting the warning is logged (see the offset-read-error task
   above) and the store falls back to offset 0.
@@ -365,7 +365,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   stop. Both fail if any one call site is reworded on its own (verified by diverging
   `cmdPeek`'s and `cmdRestart`'s text and watching each test fail).
 
-- [ ] **Name the `/rc` chrome filter in `clean.go`.** `isChrome()` matches the exact
+- [x] **Name the `/rc` chrome filter in `clean.go`.** `isChrome()` matches the exact
   literal `"/rc"` with nothing in the source explaining what it strips or why — it's the
   tail of the Claude Code CLI's statusline. Give it a named constant with a name that says
   what it is, so a future reader doesn't have to reverse-engineer it from test fixtures.
