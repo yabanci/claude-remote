@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -41,8 +42,9 @@ type Bridge struct {
 	cfg           config.Config
 	activeSession map[int64]string
 
-	turns    *sessionLocks
-	inflight sync.WaitGroup
+	turns       *sessionLocks
+	generations *sessionGenerations
+	inflight    sync.WaitGroup
 }
 
 func New(cfg config.Config, configPath string, tg *telegram.Client, runner Runner, log *slog.Logger, stateDir string) *Bridge {
@@ -56,6 +58,7 @@ func New(cfg config.Config, configPath string, tg *telegram.Client, runner Runne
 		offsets:       newOffsetStore(stateDir, log),
 		activeSession: make(map[int64]string),
 		turns:         newSessionLocks(),
+		generations:   newSessionGenerations(),
 	}
 }
 
@@ -92,12 +95,34 @@ func (b *Bridge) dispatch(ctx context.Context, u telegram.Update) {
 	b.inflight.Add(1)
 	go func() {
 		defer b.inflight.Done()
+		defer b.recoverFromPanic(ctx, u)
 		if u.CallbackQuery != nil {
 			b.handleCallback(ctx, u.CallbackQuery)
 			return
 		}
 		b.handleUpdate(ctx, u)
 	}()
+}
+
+func (b *Bridge) recoverFromPanic(ctx context.Context, u telegram.Update) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	b.log.Error("recovered from a panic while handling an update", "update_id", u.UpdateID, "panic", r)
+	if chatID, ok := chatIDOf(u); ok {
+		b.reply(ctx, chatID, "что-то сломалось при обработке этого сообщения, но бридж жив — попробуй ещё раз")
+	}
+}
+
+func chatIDOf(u telegram.Update) (int64, bool) {
+	if u.Message != nil {
+		return u.Message.Chat.ID, true
+	}
+	if u.CallbackQuery != nil && u.CallbackQuery.Message != nil {
+		return u.CallbackQuery.Message.Chat.ID, true
+	}
+	return 0, false
 }
 
 func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
@@ -125,7 +150,8 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 		b.handleCommand(ctx, chatID, msg.Text)
 		return
 	}
-	b.inSessionTurn(chatID, func() { b.handleMessage(ctx, chatID, msg) })
+	target := b.targetSessionFor(chatID, msg.Text)
+	b.inSessionTurn(target, func() { b.handleMessage(ctx, chatID, msg) })
 }
 
 func (b *Bridge) handleMessage(ctx context.Context, chatID int64, msg *telegram.Message) {
@@ -159,7 +185,7 @@ func (b *Bridge) handleCallback(ctx context.Context, q *telegram.CallbackQuery) 
 		b.log.Warn("answer callback failed", "err", err)
 	}
 	ctx = withReplyTo(ctx, q.Message.MessageID)
-	b.inSessionTurn(chatID, func() { b.forwardToSession(ctx, chatID, q.Data) })
+	b.inSessionTurn(b.activeSessionName(chatID), func() { b.forwardToSession(ctx, chatID, q.Data) })
 }
 
 func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
@@ -183,22 +209,27 @@ func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
 }
 
 func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) bool {
-	if err := b.bindOwner(userID, chatID); err != nil {
+	switch err := b.bindOwner(userID, chatID); {
+	case err == nil:
+		b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
+		return true
+	case errors.Is(err, errAlreadyBound):
+		b.log.Warn("bootstrap lost the race to another sender, ignoring", "user_id", userID, "chat_id", chatID)
+		return false
+	default:
 		b.log.Error("bootstrap: save config failed, refusing to bind", "err", err)
 		b.reply(ctx, chatID, "не смог закрепить владельца в конфиге, поэтому ничего не выполняю. Проверь права на файл конфигурации и напиши снова.")
 		return false
 	}
-
-	b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
-	b.reply(ctx, chatID, fmt.Sprintf(
-		"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
-	return true
 }
 
 type sessionRef struct {
-	name    string
-	dir     string
-	command string
+	name       string
+	dir        string
+	command    string
+	generation uint64
 }
 
 func (b *Bridge) resolveSession(chatID int64, name string) (sessionRef, error) {
@@ -223,7 +254,8 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	if !b.ensureRunning(ctx, chatID, s) {
+	s, ok := b.ensureRunning(ctx, chatID, s)
+	if !ok {
 		return
 	}
 	if b.heldBackByOpenDialog(ctx, chatID, s, text) {
@@ -236,28 +268,30 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	if !b.sendAndAwait(ctx, chatID, s.name, text) {
+	if !b.sendAndAwait(ctx, chatID, s, text) {
 		return
 	}
 	b.deliverAnswer(ctx, chatID, s.name, before, text)
 }
 
-func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) bool {
+func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) (sessionRef, bool) {
 	if b.runner.Exists(s.name) {
-		return true
+		s.generation = b.generations.current(s.name)
+		return s, true
 	}
 	if err := b.runner.Start(s.name, s.dir, s.command); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
-		return false
+		return sessionRef{}, false
 	}
+	s.generation = b.generations.bump(s.name)
 
 	settle := b.settle()
 	time.Sleep(settle.ColdStartDelay())
-	if _, err := WaitForSettle(ctx, b.watchVisible(s.name), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
+	if _, err := WaitForSettle(ctx, b.watchVisible(s.name, s.generation), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
-		return false
+		return sessionRef{}, false
 	}
-	return true
+	return s, true
 }
 
 func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessionRef, text string) bool {
@@ -287,8 +321,8 @@ func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessi
 	return false
 }
 
-func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text string) bool {
-	if err := b.runner.SendKeys(name, text); err != nil {
+func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, s sessionRef, text string) bool {
+	if err := b.runner.SendKeys(s.name, text); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить текст в сессию: %v", err))
 		return false
 	}
@@ -298,8 +332,8 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text stri
 
 	settle := b.settle()
 	time.Sleep(settle.PostSendDelay())
-	if _, err := WaitForSettle(ctx, b.watchVisible(name), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+	if _, err := WaitForSettle(ctx, b.watchVisible(s.name, s.generation), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return false
 	}
 	return true
@@ -339,6 +373,11 @@ func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, 
 }
 
 func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name string, err error) {
+	if errors.Is(err, errSessionReplaced) {
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"сессия %q перезапустилась, пока готовился ответ на предыдущий вопрос — тот ответ потерян.\n\nПовтори вопрос.", name))
+		return
+	}
 	if !b.runner.Exists(name) {
 		b.reply(ctx, chatID, fmt.Sprintf(
 			"сессия %q пропала, пока готовился ответ — он потерян.\n\nПодними её: /cr_restart", name))
@@ -347,8 +386,15 @@ func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name st
 	b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
 }
 
-func (b *Bridge) watchVisible(name string) CaptureFunc {
-	return func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
+var errSessionReplaced = errors.New("session was killed and restarted under the same name mid-turn")
+
+func (b *Bridge) watchVisible(name string, generation uint64) CaptureFunc {
+	return func() (string, error) {
+		if b.generations.current(name) != generation {
+			return "", errSessionReplaced
+		}
+		return b.runner.CapturePane(name, visiblePaneOnly)
+	}
 }
 
 func (b *Bridge) handleUpload(ctx context.Context, chatID int64, fileID, fileName, caption string) {

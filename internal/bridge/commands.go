@@ -163,6 +163,7 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 		b.reply(ctx, chatID, fmt.Sprintf(startFailedRolledBack, err))
 		return
 	}
+	b.generations.bump(name)
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
 }
 
@@ -200,6 +201,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить: %v", err))
 		return
 	}
+	b.generations.bump(s.name)
 	b.reply(ctx, chatID, fmt.Sprintf("перезапущена: %s", s.name))
 }
 

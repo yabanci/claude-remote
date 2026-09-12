@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,8 @@ const (
 	errSessionExists      = "сессия %q уже существует, используй /cr_use"
 	defaultSessionCommand = "claude"
 )
+
+var errAlreadyBound = errors.New("bridge is already bound to an owner")
 
 type replyToKey struct{}
 
@@ -48,6 +51,28 @@ func (s *sessionLocks) of(name string) *sync.Mutex {
 	return lock
 }
 
+type sessionGenerations struct {
+	mu  sync.Mutex
+	gen map[string]uint64
+}
+
+func newSessionGenerations() *sessionGenerations {
+	return &sessionGenerations{gen: make(map[string]uint64)}
+}
+
+func (g *sessionGenerations) current(name string) uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.gen[name]
+}
+
+func (g *sessionGenerations) bump(name string) uint64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.gen[name]++
+	return g.gen[name]
+}
+
 var lockFreeCommands = map[string]bool{
 	"/cr_interrupt": true,
 	"/cr_kill":      true,
@@ -64,11 +89,22 @@ func runsWhileSessionIsBusy(text string) bool {
 	return lockFreeCommands[stripBotSuffix(name)]
 }
 
-func (b *Bridge) inSessionTurn(chatID int64, turn func()) {
-	lock := b.turns.of(b.activeSessionName(chatID))
+func (b *Bridge) inSessionTurn(name string, turn func()) {
+	lock := b.turns.of(name)
 	lock.Lock()
 	defer lock.Unlock()
 	turn()
+}
+
+func (b *Bridge) targetSessionFor(chatID int64, text string) string {
+	trimmed := strings.TrimSpace(text)
+	cmd, arg, _ := strings.Cut(trimmed, " ")
+	if stripBotSuffix(cmd) == "/cr_restart" {
+		if name := strings.TrimSpace(arg); name != "" {
+			return name
+		}
+	}
+	return b.activeSessionName(chatID)
 }
 
 func (b *Bridge) needsBootstrap() bool {
@@ -109,6 +145,9 @@ func (b *Bridge) sessionConfig(name string) (config.SessionConfig, bool) {
 func (b *Bridge) bindOwner(userID, chatID int64) error {
 	b.state.Lock()
 	defer b.state.Unlock()
+	if !b.cfg.NeedsBootstrap() {
+		return errAlreadyBound
+	}
 	candidate := b.cfg
 	candidate.AllowedUsers = []int64{userID}
 	candidate.AllowedChats = []int64{chatID}
