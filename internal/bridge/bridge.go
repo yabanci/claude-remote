@@ -149,7 +149,7 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 	ctx = withReplyTo(ctx, msg.MessageID)
 
 	if runsWhileSessionIsBusy(msg.Text) {
-		b.handleCommand(ctx, chatID, msg.Text)
+		b.handleCommand(ctx, chatID, "", msg.Text)
 		return
 	}
 	target := b.targetSessionFor(chatID, msg.Text)
@@ -168,7 +168,7 @@ func (b *Bridge) handleMessage(ctx context.Context, chatID int64, target string,
 			fileID: photo.FileID, fileName: photoFileName(photo), caption: msg.Caption,
 		})
 	case strings.HasPrefix(msg.Text, "/cr_"):
-		b.handleCommand(ctx, chatID, msg.Text)
+		b.handleCommand(ctx, chatID, target, msg.Text)
 	case strings.TrimSpace(msg.Text) != "":
 		b.forwardToSession(ctx, chatID, target, msg.Text)
 	default:
@@ -291,7 +291,7 @@ func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) 
 
 	settle := b.settle()
 	time.Sleep(settle.ColdStartDelay())
-	if _, err := WaitForSettle(ctx, b.watchVisible(s.name, s.generation), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
+	if _, err := WaitForSettle(ctx, b.watchVisible(s), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
 		return sessionRef{}, false
 	}
@@ -336,7 +336,7 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, s sessionRef, t
 
 	settle := b.settle()
 	time.Sleep(settle.PostSendDelay())
-	if _, err := WaitForSettle(ctx, b.watchVisible(s.name, s.generation), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
+	if _, err := WaitForSettle(ctx, b.watchVisible(s), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
 		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return false
 	}
@@ -399,13 +399,8 @@ func (b *Bridge) capturePane(s sessionRef, lines int) (string, error) {
 	return b.runner.CapturePane(s.name, lines)
 }
 
-func (b *Bridge) watchVisible(name string, generation uint64) CaptureFunc {
-	return func() (string, error) {
-		if b.generations.current(name) != generation {
-			return "", errSessionReplaced
-		}
-		return b.runner.CapturePane(name, visiblePaneOnly)
-	}
+func (b *Bridge) watchVisible(s sessionRef) CaptureFunc {
+	return func() (string, error) { return b.capturePane(s, visiblePaneOnly) }
 }
 
 type uploadedFile struct {

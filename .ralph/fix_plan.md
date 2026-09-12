@@ -61,8 +61,34 @@ bug was which lock was taken, or that nothing recovered a panic).
    `handleUpdate`/`handleCallback`, and threaded as a plain value through `handleMessage` →
    `forwardToSession`/`handleUpload` → `resolveSession`, which never re-derives it from
    `activeSessionName` when a name is already given. Test:
-   `TestATurnsTargetSessionStaysFrozenEvenIfActiveSessionChangesWhileItWaits` (`state_test.go`),
-   mutation-verified (reproduces the exact stale-resolution divergence when reverted).
+   `TestATurnsTargetSessionStaysFrozenEvenIfActiveSessionChangesWhileItWaits` (`state_test.go`).
+   **Correction (independent review round 2, 12.09.2026):** that second pass was itself
+   incomplete on two counts, both caught by a fresh independent reviewer, not by re-reading my
+   own work.
+   - The bug site: `handleCommand` (`commands.go`) was never updated to receive the frozen
+     `target` — it still took the raw `arg` from the command text and passed it straight to
+     `cmdRestart`/`cmdSend`, which called `resolveSession(chatID, arg)` or
+     `resolveSession(chatID, "")`. A bare `/cr_restart` (no explicit session name) queued while
+     the turn's lock was held for the then-active session could still act on a *different*
+     session by the time it actually ran, if `/cr_use` switched the active session while it
+     waited — the exact class of bug fix #2 exists to close, just reachable through a path fix
+     #2's first cut didn't touch. Fixed by adding `target` as `handleCommand`'s second parameter,
+     threaded from `handleUpdate`, and used by `cmdRestart`/`cmdSend` in place of `arg`/`""`.
+     Test: `TestABareCrRestartActsOnTheTurnsFrozenTargetNotAConcurrentlySwitchedActiveSession`
+     (`sessionlock_test.go`), mutation-verified against the actual `commands.go` fix (reverting
+     `target` back to `arg` at the `/cr_restart` case reproduces `Kill:work`/`Start:work` instead
+     of `main`, exactly as predicted).
+   - The regression test: `TestATurnsTargetSessionStaysFrozenEvenIfActiveSessionChangesWhileItWaits`
+     was proven inadequate — it called `targetSessionFor` then `resolveSession` directly and
+     checked the result, which tests `resolveSession`'s own contract (holds even with the
+     production bug fully present) rather than the actual bug site in
+     `forwardToSession`/`handleUpload`/`handleCommand`. Reverting the real fix to `handleCommand`
+     left the entire suite, this test included, green — "mutation-verified" was claimed for it
+     without actually reverting the production change it was meant to guard. It stays in
+     `state_test.go` as documentation of `resolveSession`'s contract but is not the regression
+     guard; the black-box test above (through the real dispatch path, using only exported API)
+     is. Lesson: mutation-verifying a fix means reverting the actual production code change and
+     re-running the new test against that — not reverting a line in the test file itself.
 
 3. **Blocking — `/cr_kill` + same-name auto-restart could race a still-polling `WaitForSettle`.**
    Fixed: `sessionGenerations` (`state.go`) — every successful `Start()` bumps a per-name counter;
@@ -88,8 +114,31 @@ The harness-regression note in the previous version of this section (this branch
 `harness_test.go` lacking `ralph-batch2`'s three-part fix) was resolved during the merge that
 folded `ralph-batch2` into this branch — the merged `harness_test.go` carries that fix.
 
-Verified together: `go build ./...`, `go vet ./...`, `gofmt -l .`, `golangci-lint run ./...`
-(0 issues), `deadcode ./...` (clean), `go test ./... -race -count=3` all green.
+Round 2 review's remaining (non-blocking) nitpicks and how each was resolved:
+- `watchVisible` duplicated `capturePane`'s generation guard verbatim, even though every call
+  site already has a `sessionRef` in hand. Fixed: `watchVisible(s sessionRef) CaptureFunc` now
+  just delegates to `capturePane(s, visiblePaneOnly)`.
+- `awaitStop`/`awaitSignal` were hardcoded to a 5s timeout while `waitUntil` had separately grown
+  to a 10s budget (observed full-suite `-race` flakiness, not a logic bug — isolated runs always
+  <0.1s). Fixed: both now share `testAwaitTimeout`/`testPollInterval` (`concurrency_test.go`) with
+  `waitUntil`, so there is one budget to tune instead of three that can silently drift apart.
+- `sessionRef`'s `generation` field zero-value ("loaded gun": a ref built before `ensureRunning`
+  runs carries `generation: 0`, indistinguishable from a real generation-0 session). Traced every
+  caller: `capturePane`/`heldBackByOpenDialog`/`sendAndAwait`/`deliverAnswer` are only ever
+  reached from `forwardToSession`, which always overwrites `s` with `ensureRunning`'s return value
+  first — `ensureRunning` unconditionally sets `s.generation` (via `generations.current` or
+  `generations.bump`) before returning. No live bug today. Left as-is rather than restructuring
+  `sessionRef` into a capture-only type: the current call graph makes it safe, and the
+  restructuring cost outweighs a currently-unreachable risk. Documented here instead of as a code
+  comment (house rule) so the next person touching this call graph knows the invariant they must
+  not break: never call the capture helpers with a `sessionRef` that skipped `ensureRunning`.
+- `deliverAnswer`'s four arguments and `panic_test.go`'s implicit goroutine-ordering assumption
+  were both judged acceptable as-is by the reviewer (pattern matches pre-existing code; ordering
+  survived stress testing) and left untouched.
+
+Verified together (after round 2's fixes): `go build ./...`, `go vet ./...`, `gofmt -l .`,
+`golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
+all green.
 
 ## Tasks
 

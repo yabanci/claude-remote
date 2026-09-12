@@ -47,7 +47,7 @@ func stripBotSuffix(cmd string) string {
 	return base
 }
 
-func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
+func (b *Bridge) handleCommand(ctx context.Context, chatID int64, target, text string) {
 	fields := strings.SplitN(strings.TrimSpace(text), " ", 2)
 	cmd := stripBotSuffix(fields[0])
 	arg := ""
@@ -67,13 +67,13 @@ func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
 	case "/cr_kill":
 		b.cmdKill(ctx, chatID, arg)
 	case "/cr_restart":
-		b.cmdRestart(ctx, chatID, arg)
+		b.cmdRestart(ctx, chatID, target)
 	case "/cr_interrupt":
 		b.cmdInterrupt(ctx, chatID)
 	case "/cr_peek":
 		b.cmdPeek(ctx, chatID)
 	case "/cr_send":
-		b.cmdSend(ctx, chatID, arg)
+		b.cmdSend(ctx, chatID, target, arg)
 	case "/cr_help":
 		b.cmdHelp(ctx, chatID)
 	default:
@@ -238,12 +238,12 @@ func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 	b.reply(ctx, chatID, shown)
 }
 
-func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {
+func (b *Bridge) cmdSend(ctx context.Context, chatID int64, target, arg string) {
 	if arg == "" {
 		b.reply(ctx, chatID, "формат: /cr_send <путь>")
 		return
 	}
-	s, err := b.resolveSession(chatID, "")
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return

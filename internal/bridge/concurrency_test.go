@@ -15,6 +15,11 @@ import (
 
 const stallGracePeriod = 500 * time.Millisecond
 
+const (
+	testAwaitTimeout = 10 * time.Second
+	testPollInterval = 10 * time.Millisecond
+)
+
 type captureStallingRunner struct {
 	*fakeRunner
 	sent    chan struct{}
@@ -87,7 +92,7 @@ func awaitSignal(t *testing.T, signal <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-signal:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAwaitTimeout):
 		t.Fatalf("timed out waiting for %s", what)
 	}
 }

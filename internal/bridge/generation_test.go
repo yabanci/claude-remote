@@ -25,7 +25,7 @@ func TestWatchVisibleReadsThePaneWhenGenerationMatches(t *testing.T) {
 	b := newTestBridgeForState(t)
 	b.runner = fixedPaneRunner{pane: "$ claude\nhello"}
 
-	capture := b.watchVisible("main", b.generations.current("main"))
+	capture := b.watchVisible(sessionRef{name: "main", generation: b.generations.current("main")})
 
 	pane, err := capture()
 
@@ -40,7 +40,7 @@ func TestWatchVisibleDetectsASessionReplacedMidPoll(t *testing.T) {
 	staleGeneration := b.generations.current("main")
 	b.generations.bump("main")
 
-	capture := b.watchVisible("main", staleGeneration)
+	capture := b.watchVisible(sessionRef{name: "main", generation: staleGeneration})
 	pane, err := capture()
 
 	assert.Empty(t, pane)

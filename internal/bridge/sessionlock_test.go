@@ -71,6 +71,10 @@ func (r *callLoggingRunner) Start(session, dir, command string) error {
 	return r.fakeRunner.Start(session, dir, command)
 }
 
+func giveQueuedTurnTimeToStartWaitingOnTheLock(d time.Duration) {
+	time.Sleep(d)
+}
+
 func textUpdateFromChat(id, chatID int64, text string) telegram.Update {
 	return telegram.Update{UpdateID: id, Message: &telegram.Message{
 		MessageID: id,
@@ -119,6 +123,44 @@ func TestCrRestartLocksTheExplicitTargetNotTheCallersActiveSession(t *testing.T)
 	require.GreaterOrEqual(t, killIdx, 0)
 	assert.Less(t, sendIdx, killIdx,
 		"the stalled turn's SendKeys must fully complete before /cr_restart's Kill runs")
+
+	cancel()
+	h.awaitStop(done)
+}
+
+func TestABareCrRestartActsOnTheTurnsFrozenTargetNotAConcurrentlySwitchedActiveSession(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	cfg.Sessions["work"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	runner := newCallLoggingRunner("hold main")
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+	require.NoError(t, runner.Start("work", cfg.Sessions["work"].Dir, "claude"))
+	runner.resetLog()
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "hold main")}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
+
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "/cr_use work"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_restart"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+
+	close(runner.release)
+	waitUntil(t, func() bool {
+		return strings.Contains(strings.Join(h.tg.messages(), "\n"), "перезапущена")
+	})
+
+	log := runner.callLog()
+	assert.Contains(t, log, "Kill:main",
+		"a bare /cr_restart, queued while the active session was still \"main\", must restart "+
+			"\"main\" -- the session its turn actually locked -- even though /cr_use switched "+
+			"the chat's active session to \"work\" while it was waiting")
+	assert.NotContains(t, log, "Kill:work",
+		"it must not act on \"work\" just because that became the active session by the time "+
+			"the queued turn finally ran -- that is the exact re-derivation bug this test guards")
 
 	cancel()
 	h.awaitStop(done)

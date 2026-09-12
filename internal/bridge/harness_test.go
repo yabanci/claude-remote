@@ -479,7 +479,7 @@ func (h *harness) awaitStop(done <-chan struct{}) {
 	h.t.Helper()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAwaitTimeout):
 		h.t.Fatal("bridge did not stop after cancel")
 	}
 }
@@ -493,11 +493,12 @@ func (h *harness) lastMessage() string {
 
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 1000; i++ {
+	deadline := time.Now().Add(testAwaitTimeout)
+	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(testPollInterval)
 	}
 	t.Fatal("condition not met in time")
 }
