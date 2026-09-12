@@ -46,3 +46,19 @@ func TestWatchVisibleDetectsASessionReplacedMidPoll(t *testing.T) {
 	assert.Empty(t, pane)
 	assert.True(t, errors.Is(err, errSessionReplaced))
 }
+
+func TestCapturePaneDetectsASessionReplacedBetweenTurnSteps(t *testing.T) {
+	b := newTestBridgeForState(t)
+	b.runner = fixedPaneRunner{pane: "should never be read"}
+
+	s := sessionRef{name: "main", generation: b.generations.current("main")}
+	b.generations.bump("main")
+
+	pane, err := b.capturePane(s, visiblePaneOnly)
+
+	assert.Empty(t, pane)
+	assert.True(t, errors.Is(err, errSessionReplaced),
+		"a Start() landing between two capture points of the same turn (e.g. before "+
+			"heldBackByOpenDialog's dialog check or deliverAnswer's before/after reads) "+
+			"must be caught the same way WaitForSettle's own poll loop already is")
+}

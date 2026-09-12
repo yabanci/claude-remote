@@ -47,11 +47,22 @@ bug was which lock was taken, or that nothing recovered a panic).
    overwriting the first owner. `bootstrapOwner` (`bridge.go`) distinguishes that case from a real
    save failure. Test: `TestBindOwnerRefusesASecondBindingOnceAlreadyBound` (`state_test.go`).
 
-2. **Blocking — `inSessionTurn` locked the wrong session.** Fixed: `inSessionTurn` now takes the
-   lock name explicitly; `targetSessionFor` (`state.go`) resolves `/cr_restart`'s explicit
-   argument (if any) before locking, instead of always locking the caller's own active session.
-   Test: `TestCrRestartLocksTheExplicitTargetNotTheCallersActiveSession` (`sessionlock_test.go`),
-   mutation-verified (reverting the fix makes it fail on the exact interleaving described above).
+2. **Blocking — `inSessionTurn` locked the wrong session.** Fixed in two passes. First pass:
+   `inSessionTurn` takes the lock name explicitly; `targetSessionFor` (`state.go`) resolves
+   `/cr_restart`'s explicit argument (if any) before locking, instead of always locking the
+   caller's own active session. Test: `TestCrRestartLocksTheExplicitTargetNotTheCallersActiveSession`
+   (`sessionlock_test.go`), mutation-verified. **Correction (independent review, 12.09.2026):**
+   that first pass was still incomplete — the resolved lock *name* and the session actually acted
+   on could still diverge, because `forwardToSession`/`handleUpload` independently re-resolved
+   `activeSessionName(chatID)` a second time *inside* the lock. If `/cr_use` changed the active
+   session while a turn was queued waiting for that same lock, the turn would acquire the lock for
+   the *old* session but act on the *new* one once it finally ran — reproduced by the reviewer.
+   Second pass: the target session name is now resolved exactly once per turn, at
+   `handleUpdate`/`handleCallback`, and threaded as a plain value through `handleMessage` →
+   `forwardToSession`/`handleUpload` → `resolveSession`, which never re-derives it from
+   `activeSessionName` when a name is already given. Test:
+   `TestATurnsTargetSessionStaysFrozenEvenIfActiveSessionChangesWhileItWaits` (`state_test.go`),
+   mutation-verified (reproduces the exact stale-resolution divergence when reverted).
 
 3. **Blocking — `/cr_kill` + same-name auto-restart could race a still-polling `WaitForSettle`.**
    Fixed: `sessionGenerations` (`state.go`) — every successful `Start()` bumps a per-name counter;
@@ -59,12 +70,13 @@ bug was which lock was taken, or that nothing recovered a panic).
    `errSessionReplaced` if it changed mid-turn, instead of transparently reading whatever is now
    running under that name. Tests: `TestWatchVisibleDetectsASessionReplacedMidPoll`,
    `TestWatchVisibleReadsThePaneWhenGenerationMatches` (`generation_test.go`), both
-   mutation-verified. Note found during implementation: fix #2 already makes every `Start()`
-   call site serialize against any in-flight turn on the same target session, so the specific
-   end-to-end scenario in the original write-up (a second *message* racing a stalled poll) is no
-   longer reachable through the existing command set — the generation check is kept anyway as a
-   direct, tested guard on the mechanism itself, and as a safety net against a future code path
-   that calls `Start()` outside `inSessionTurn`.
+   mutation-verified. **Correction (independent review, 12.09.2026):** an earlier version of this
+   note claimed fix #2 alone already made this scenario unreachable — that was wrong. Fix #2's
+   *first* pass (locking on the target name) still let a turn's lock key and its actual resolved
+   session diverge (see fix #2's "Correction" note below); the reviewer built a reproducer proving
+   the generation check was catching a *real*, currently-live case, not a hypothetical one. Fix
+   #2 was then completed to close that divergence too. Do not re-derive "is this still needed"
+   from first principles without re-reading that history — this note has been wrong once already.
 
 4. **High — unrecovered panic in a dispatched goroutine killed the whole process and the whole
    in-flight batch.** Fixed: `dispatch()` (`bridge.go`) recovers per goroutine, logs the panic,

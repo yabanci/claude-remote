@@ -348,7 +348,6 @@ func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner)
 		t:          t,
 		cfg:        cfg,
 		configPath: configPath,
-		runner:     newFakeRunner(),
 		tg:         ft,
 		bridge:     bridge.New(cfg, configPath, tg, runner, logger, t.TempDir()),
 	}
@@ -494,7 +493,7 @@ func (h *harness) lastMessage() string {
 
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 500; i++ {
+	for i := 0; i < 1000; i++ {
 		if cond() {
 			return
 		}

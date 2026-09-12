@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -109,7 +110,8 @@ func (b *Bridge) recoverFromPanic(ctx context.Context, u telegram.Update) {
 	if r == nil {
 		return
 	}
-	b.log.Error("recovered from a panic while handling an update", "update_id", u.UpdateID, "panic", r)
+	b.log.Error("recovered from a panic while handling an update",
+		"update_id", u.UpdateID, "panic", r, "stack", string(debug.Stack()))
 	if chatID, ok := chatIDOf(u); ok {
 		b.reply(ctx, chatID, "что-то сломалось при обработке этого сообщения, но бридж жив — попробуй ещё раз")
 	}
@@ -151,20 +153,24 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 		return
 	}
 	target := b.targetSessionFor(chatID, msg.Text)
-	b.inSessionTurn(target, func() { b.handleMessage(ctx, chatID, msg) })
+	b.inSessionTurn(target, func() { b.handleMessage(ctx, chatID, target, msg) })
 }
 
-func (b *Bridge) handleMessage(ctx context.Context, chatID int64, msg *telegram.Message) {
+func (b *Bridge) handleMessage(ctx context.Context, chatID int64, target string, msg *telegram.Message) {
 	switch {
 	case msg.Document != nil:
-		b.handleUpload(ctx, chatID, msg.Document.FileID, msg.Document.FileName, msg.Caption)
+		b.handleUpload(ctx, chatID, target, uploadedFile{
+			fileID: msg.Document.FileID, fileName: msg.Document.FileName, caption: msg.Caption,
+		})
 	case msg.LargestPhoto() != nil:
 		photo := msg.LargestPhoto()
-		b.handleUpload(ctx, chatID, photo.FileID, photoFileName(photo), msg.Caption)
+		b.handleUpload(ctx, chatID, target, uploadedFile{
+			fileID: photo.FileID, fileName: photoFileName(photo), caption: msg.Caption,
+		})
 	case strings.HasPrefix(msg.Text, "/cr_"):
 		b.handleCommand(ctx, chatID, msg.Text)
 	case strings.TrimSpace(msg.Text) != "":
-		b.forwardToSession(ctx, chatID, msg.Text)
+		b.forwardToSession(ctx, chatID, target, msg.Text)
 	default:
 		b.log.Warn("message carried nothing the bridge understands", "chat", chatID)
 		b.reply(ctx, chatID, "не понял это сообщение: умею текст, файлы и фото")
@@ -185,7 +191,8 @@ func (b *Bridge) handleCallback(ctx context.Context, q *telegram.CallbackQuery) 
 		b.log.Warn("answer callback failed", "err", err)
 	}
 	ctx = withReplyTo(ctx, q.Message.MessageID)
-	b.inSessionTurn(b.activeSessionName(chatID), func() { b.forwardToSession(ctx, chatID, q.Data) })
+	target := b.activeSessionName(chatID)
+	b.inSessionTurn(target, func() { b.forwardToSession(ctx, chatID, target, q.Data) })
 }
 
 func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
@@ -208,20 +215,17 @@ func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
 	return func() { once.Do(func() { close(done) }) }
 }
 
-func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) bool {
+func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) {
 	switch err := b.bindOwner(userID, chatID); {
 	case err == nil:
 		b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
 		b.reply(ctx, chatID, fmt.Sprintf(
 			"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
-		return true
 	case errors.Is(err, errAlreadyBound):
 		b.log.Warn("bootstrap lost the race to another sender, ignoring", "user_id", userID, "chat_id", chatID)
-		return false
 	default:
 		b.log.Error("bootstrap: save config failed, refusing to bind", "err", err)
 		b.reply(ctx, chatID, "не смог закрепить владельца в конфиге, поэтому ничего не выполняю. Проверь права на файл конфигурации и напиши снова.")
-		return false
 	}
 }
 
@@ -247,8 +251,8 @@ func (b *Bridge) resolveSession(chatID int64, name string) (sessionRef, error) {
 	return sessionRef{name: name, dir: dir, command: sc.Command}, nil
 }
 
-func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string) {
-	s, err := b.resolveSession(chatID, "")
+func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, target, text string) {
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
@@ -262,7 +266,7 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 		return
 	}
 
-	before, err := b.runner.CapturePane(s.name, captureHistoryLines)
+	before, err := b.capturePane(s, captureHistoryLines)
 	if err != nil {
 		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
@@ -271,7 +275,7 @@ func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string
 	if !b.sendAndAwait(ctx, chatID, s, text) {
 		return
 	}
-	b.deliverAnswer(ctx, chatID, s.name, before, text)
+	b.deliverAnswer(ctx, chatID, s, before, text)
 }
 
 func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) (sessionRef, bool) {
@@ -295,7 +299,7 @@ func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) 
 }
 
 func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessionRef, text string) bool {
-	visible, err := b.runner.CapturePane(s.name, visiblePaneOnly)
+	visible, err := b.capturePane(s, visiblePaneOnly)
 	if err != nil {
 		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return true
@@ -339,16 +343,16 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, s sessionRef, t
 	return true
 }
 
-func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, text string) {
-	after, err := b.runner.CapturePane(name, captureHistoryLines)
+func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, s sessionRef, before, text string) {
+	after, err := b.capturePane(s, captureHistoryLines)
 	if err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
 	}
 
-	visible, err := b.runner.CapturePane(name, visiblePaneOnly)
+	visible, err := b.capturePane(s, visiblePaneOnly)
 	if err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
 	}
 	if menu, isMenu := ParseMenu(visible); isMenu {
@@ -364,7 +368,7 @@ func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, 
 	reply, rawFallback := FormatReply(produced)
 	if rawFallback {
 		b.log.Warn("reply carried no known TUI marker, sent raw pane text instead",
-			"session", name, "expected_markers", ExpectedMarkers())
+			"session", s.name, "expected_markers", ExpectedMarkers())
 	}
 	if reply == "" {
 		reply = "(сессия ничего не вывела — см. /cr_status)"
@@ -388,6 +392,13 @@ func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name st
 
 var errSessionReplaced = errors.New("session was killed and restarted under the same name mid-turn")
 
+func (b *Bridge) capturePane(s sessionRef, lines int) (string, error) {
+	if b.generations.current(s.name) != s.generation {
+		return "", errSessionReplaced
+	}
+	return b.runner.CapturePane(s.name, lines)
+}
+
 func (b *Bridge) watchVisible(name string, generation uint64) CaptureFunc {
 	return func() (string, error) {
 		if b.generations.current(name) != generation {
@@ -397,26 +408,32 @@ func (b *Bridge) watchVisible(name string, generation uint64) CaptureFunc {
 	}
 }
 
-func (b *Bridge) handleUpload(ctx context.Context, chatID int64, fileID, fileName, caption string) {
-	s, err := b.resolveSession(chatID, "")
+type uploadedFile struct {
+	fileID   string
+	fileName string
+	caption  string
+}
+
+func (b *Bridge) handleUpload(ctx context.Context, chatID int64, target string, f uploadedFile) {
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
-	file, err := b.tg.GetFile(ctx, fileID)
+	file, err := b.tg.GetFile(ctx, f.fileID)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось получить файл: %v", err))
 		return
 	}
 
-	relPath := filepath.Join("telegram-inbox", sanitizeFileName(fileName))
+	relPath := filepath.Join("telegram-inbox", sanitizeFileName(f.fileName))
 	if err := b.tg.DownloadFile(ctx, file.FilePath, filepath.Join(s.dir, relPath)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось скачать файл: %v", err))
 		return
 	}
 
-	b.forwardToSession(ctx, chatID, uploadPrompt(relPath, caption))
+	b.forwardToSession(ctx, chatID, target, uploadPrompt(relPath, f.caption))
 }
 
 func uploadPrompt(relPath, caption string) string {

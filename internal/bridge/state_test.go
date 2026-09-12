@@ -32,3 +32,25 @@ func TestBindOwnerRefusesASecondBindingOnceAlreadyBound(t *testing.T) {
 		"the first owner must still be the one on record")
 	assert.Equal(t, []int64{1001}, b.cfg.AllowedChats)
 }
+
+func TestATurnsTargetSessionStaysFrozenEvenIfActiveSessionChangesWhileItWaits(t *testing.T) {
+	b := newTestBridgeForState(t)
+	const chatID = 1
+	b.cfg.Sessions["main"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	b.cfg.Sessions["work"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	b.activeSession[chatID] = "main"
+
+	target := b.targetSessionFor(chatID, "hello")
+	require.Equal(t, "main", target, "the turn's target is fixed at dispatch time")
+
+	b.activeSession[chatID] = "work"
+
+	s, err := b.resolveSession(chatID, target)
+
+	require.NoError(t, err)
+	assert.Equal(t, "main", s.name,
+		"a turn already locked on \"main\" must still resolve to \"main\" even if /cr_use "+
+			"switched the chat's active session to \"work\" while the turn was queued — "+
+			"re-deriving the active session here instead of reusing the frozen target is "+
+			"exactly what let a turn holding one session's lock act on a different session")
+}
