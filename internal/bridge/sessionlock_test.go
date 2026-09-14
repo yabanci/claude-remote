@@ -1,6 +1,8 @@
 package bridge_test
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -143,9 +145,9 @@ func TestABareCrRestartActsOnTheTurnsFrozenTargetNotAConcurrentlySwitchedActiveS
 	cancel, done := h.runInBackground()
 	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
 
-	h.tg.enqueue(textUpdateFromChat(2, chatID, "/cr_use work"))
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "/cr_restart"))
 	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
-	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_restart"))
+	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_use work"))
 	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
 
 	close(runner.release)
@@ -161,6 +163,147 @@ func TestABareCrRestartActsOnTheTurnsFrozenTargetNotAConcurrentlySwitchedActiveS
 	assert.NotContains(t, log, "Kill:work",
 		"it must not act on \"work\" just because that became the active session by the time "+
 			"the queued turn finally ran -- that is the exact re-derivation bug this test guards")
+
+	cancel()
+	h.awaitStop(done)
+}
+
+func TestABareCrNewCreatesItsOwnSessionWithoutWaitingOnAnUnrelatedActiveSessionsTurn(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	runner := newCallLoggingRunner("hold main")
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+	runner.resetLog()
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "hold main")}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
+
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "/cr_new work "+t.TempDir()))
+	waitUntil(t, func() bool {
+		return strings.Contains(strings.Join(h.tg.messages(), "\n"), "создана и запущена: work")
+	})
+
+	assert.Contains(t, runner.callLog(), "Start:work",
+		"/cr_new must create and start its own session even while an unrelated session's turn "+
+			"(here, \"main\") is still stalled -- it must lock on the session it is creating, "+
+			"not on the caller's then-active session, or it would wait for a turn that has "+
+			"nothing to do with the session being created")
+
+	close(runner.release)
+	cancel()
+	h.awaitStop(done)
+}
+
+func TestAQueuedPlainMessageStaysOnItsFrozenTargetEvenIfActiveSessionChangesWhileItWaits(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	cfg.Sessions["work"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	runner := newCallLoggingRunner("hold main")
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+	require.NoError(t, runner.Start("work", cfg.Sessions["work"].Dir, "claude"))
+	runner.resetLog()
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "hold main")}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
+
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "second question"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_use work"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+
+	close(runner.release)
+	waitUntil(t, func() bool {
+		return slices.Contains(runner.callLog(), "SendKeys:second question")
+	})
+
+	mainPane, err := runner.CapturePane("main", 0)
+	require.NoError(t, err)
+	assert.Contains(t, mainPane, "second question",
+		"a plain message, queued while the active session was still \"main\", must be forwarded "+
+			"to \"main\" -- the session its turn actually locked -- even though /cr_use switched "+
+			"the chat's active session to \"work\" while it was waiting")
+
+	workPane, err := runner.CapturePane("work", 0)
+	require.NoError(t, err)
+	assert.NotContains(t, workPane, "second question",
+		"it must not act on \"work\" just because that became the active session by the time "+
+			"the queued turn finally ran -- that is the exact re-derivation bug this test guards")
+
+	cancel()
+	h.awaitStop(done)
+}
+
+func TestAQueuedCrSendStaysOnItsFrozenTargetEvenIfActiveSessionChangesWhileItWaits(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	cfg.Sessions["work"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.Sessions["main"].Dir, "note.txt"), []byte("main's note"), 0o600))
+
+	runner := newCallLoggingRunner("hold main")
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+	require.NoError(t, runner.Start("work", cfg.Sessions["work"].Dir, "claude"))
+	runner.resetLog()
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "hold main")}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
+
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "/cr_send note.txt"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_use work"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+
+	close(runner.release)
+	waitUntil(t, func() bool { return len(h.tg.documents()) > 0 })
+
+	assert.NotContains(t, strings.Join(h.tg.messages(), "\n"), "файл не найден",
+		"a bare /cr_send, queued while the active session was still \"main\", must read the file "+
+			"from \"main\" -- the session its turn actually locked -- even though /cr_use switched "+
+			"the chat's active session to \"work\" while it was waiting")
+
+	cancel()
+	h.awaitStop(done)
+}
+
+func TestAQueuedUploadStaysOnItsFrozenTargetEvenIfActiveSessionChangesWhileItWaits(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	cfg.Sessions["work"] = config.SessionConfig{Dir: t.TempDir(), Command: "claude"}
+	runner := newCallLoggingRunner("hold main")
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+	require.NoError(t, runner.Start("work", cfg.Sessions["work"].Dir, "claude"))
+	runner.resetLog()
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "hold main")}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "the long turn to reach SendKeys on \"main\"")
+
+	upload := documentMessage("notes.txt")
+	h.tg.enqueue(telegram.Update{UpdateID: 2, Message: &upload})
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+	h.tg.enqueue(textUpdateFromChat(3, chatID, "/cr_use work"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+
+	close(runner.release)
+	waitUntil(t, func() bool {
+		_, err := os.Stat(filepath.Join(cfg.Sessions["main"].Dir, "telegram-inbox", "notes.txt"))
+		return err == nil
+	})
+
+	assert.NoFileExists(t, filepath.Join(cfg.Sessions["work"].Dir, "telegram-inbox", "notes.txt"),
+		"an upload queued while the active session was still \"main\" must land in \"main\"'s "+
+			"inbox -- the session its turn actually locked -- even though /cr_use switched the "+
+			"chat's active session to \"work\" while it was waiting")
 
 	cancel()
 	h.awaitStop(done)

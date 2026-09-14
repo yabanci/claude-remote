@@ -140,6 +140,86 @@ Verified together (after round 2's fixes): `go build ./...`, `go vet ./...`, `go
 `golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
 all green.
 
+### Round 3 (independent review, 14.09.2026)
+
+Round 2's own fix (`cmdRestart`/`handleCommand`) was confirmed genuinely solid this time — the
+reviewer mutation-verified it independently rather than trusting the commit message. But it found
+one new blocking bug of the *same class* the first two rounds found, plus a real test-coverage gap
+in round 1's own fix, and several should-fix items.
+
+**Blocking — `cmdNew` started and bumped a session without holding that session's turn lock.**
+`targetSessionFor` only special-cased `/cr_restart`; a `/cr_new work <dir>` command's turn locked
+on the caller's *then-active* session (say `main`), not on `work` — the session `cmdNew` was about
+to create and start. A message dispatched moments later that also resolved to `work` (e.g. because
+`addSession` had already flipped the chat's active pointer to `work` before `runner.Start("work")`
+even ran) could race `cmdNew`'s own `Start`/`generations.bump`, risking a duplicate
+`tmux new-session`, a spurious rollback that deletes a session another goroutine just typed into,
+or a bogus "session was replaced" error. Fixed the same way `/cr_restart` was fixed: extended
+`targetSessionFor` to special-case `/cr_new <name> ...` too, returning the new session's own name
+as the lock target — so `cmdNew` now runs under `work`'s own lock, and any concurrently-dispatched
+message that also resolves to `work` correctly queues behind it instead of racing it. This also
+removes an incidental, unrelated serialization: `/cr_new` no longer waits for an unrelated session's
+in-flight turn to finish before it can even start creating the new one — which is exactly the kind
+of stuck-session problem this whole redesign exists to fix. Test:
+`TestABareCrNewCreatesItsOwnSessionWithoutWaitingOnAnUnrelatedActiveSessionsTurn`
+(`sessionlock_test.go`), mutation-verified (reverting the `/cr_new` case reproduces the exact
+symptom: the command hangs behind the unrelated session's lock and times out).
+
+**Should-fix, now fixed — round 1's `forwardToSession`/`handleUpload`/`cmdSend` frozen-target fix
+had zero regression coverage.** Only `cmdRestart` had a black-box guard (from round 2). Mutation-
+verified this was a real gap: reverting each of the three original `resolveSession(chatID, target)`
+call sites back to `resolveSession(chatID, "")` left the *entire* suite green. Added three black-box
+tests through the real dispatch path — `TestAQueuedPlainMessageStaysOnItsFrozenTargetEvenIf...`,
+`TestAQueuedCrSendStaysOnItsFrozenTargetEvenIf...`, `TestAQueuedUploadStaysOnItsFrozenTargetEvenIf...`
+(all in `sessionlock_test.go`) — each mutation-verified individually against its own call site.
+
+**Should-fix, now fixed — command text was parsed twice, independently, which is structurally why
+this bug class kept recurring.** `targetSessionFor` (lock-target resolution) and `handleCommand`
+(dispatch) each re-implemented "split off the command name, strip the bot `@suffix`, trim the arg"
+with their own `strings.Cut`/`SplitN` calls. Two independent parsers agreeing on every case forever
+is not a property anything enforced. Extracted one `parseCommand(text) (name, arg string, ok bool)`
+used by `runsWhileSessionIsBusy`, `targetSessionFor`, and `handleCommand` alike; also fixed a related
+nitpick this surfaced (`handleMessage`'s own `/cr_` routing check used an *untrimmed* prefix check,
+so a leading-space command like `" /cr_restart"` would be sent into the Claude session as raw text
+instead of executing — now routed through the same shared, trimming `isCrCommand` helper).
+
+**Should-fix, now fixed — commands that touch no session still serialized behind the busy session's
+turn lock.** `/cr_help`, `/cr_sessions`, and `/cr_use` never touch the Runner at all (the first two
+are read-only, `cmdUse` only flips an in-memory pointer under `b.state`) but were routed through
+`inSessionTurn`, so a user could not switch away from a stuck session without waiting for it —
+undermining the point of this whole redesign for one of its most common cases. Added all three to
+`lockFreeCommands`. This changed the interleaving `TestABareCrRestartActsOnTheTurnsFrozenTarget...`
+relies on to engineer its race (that test depended on `/cr_use` itself being lock-bound); reordered
+the test's message sequence (`/cr_restart` enqueued before `/cr_use` instead of after) to keep
+exercising the same frozen-target invariant now that `/cr_use` no longer queues.
+
+**Should-fix, deliberately deferred — updates from one `getUpdates` batch dispatch into unordered
+goroutines, so two messages to the same session can theoretically reach it out of order.** The old
+serial `Run()` could not do this; `sync.Mutex` is not FIFO for goroutines that have not yet started
+waiting. The reviewer could not reproduce it (the test harness hands out one update per poll,
+which inserts a real HTTP round-trip between siblings and always gives the first a head start) and
+a correct fix (a ticket/FIFO lock keyed by session name, with target resolution moved earlier so
+tickets are drawn in true arrival order) is an architectural change, not a mechanical one — exactly
+the kind of change this pass's own ground rules reserve for an explicit decision rather than a
+drive-by fix in an area that has already had three rounds of bugs found. Left for a follow-up.
+
+Nitpicks not addressed (reviewer judged pre-existing/harmless, or a real fix independently found
+during this pass): `sessionLocks.of` never evicts a name (owner-only, unbounded but slow-growing);
+`cmdKill` not bumping the generation (asymmetric with `Start` but already handled correctly via the
+`Exists` check); `showTyping`'s goroutine not tracked by `inflight` (pre-existing, harmless).
+
+Also found, unrelated to this audit and NOT fixed here (documented instead, see
+[[claude_remote_gotchas]] #36): `TestCrSendFollowsSymlinksThatStayInsideSessionDir` flakes on
+"context canceled" roughly 1 in 10-15 isolated runs, reproduced on the already-committed round-2
+HEAD too. Root cause is a test-harness race in `fakeTelegram`'s `sendDocument` fake (it records the
+document server-side before the client-side call returns, so the test's "wait for reply, then
+cancel the bridge" pattern can cancel a call the fake already considered successful) — not a bridge
+dispatch/locking bug, out of scope for this pass.
+
+Verified together (after round 3's fixes): `go build ./...`, `go vet ./...`, `gofmt -l .`,
+`golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
+all green (aside from gotcha #36's known pre-existing flake, unrelated to this round).
+
 ## Tasks
 
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and

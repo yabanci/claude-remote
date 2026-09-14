@@ -78,15 +78,32 @@ var lockFreeCommands = map[string]bool{
 	"/cr_kill":      true,
 	"/cr_status":    true,
 	"/cr_peek":      true,
+	"/cr_help":      true,
+	"/cr_sessions":  true,
+	"/cr_use":       true,
+}
+
+func parseCommand(text string) (name, arg string, ok bool) {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/cr_") {
+		return "", "", false
+	}
+	fields := strings.SplitN(trimmed, " ", 2)
+	name = stripBotSuffix(fields[0])
+	if len(fields) > 1 {
+		arg = strings.TrimSpace(fields[1])
+	}
+	return name, arg, true
+}
+
+func isCrCommand(text string) bool {
+	_, _, ok := parseCommand(text)
+	return ok
 }
 
 func runsWhileSessionIsBusy(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if !strings.HasPrefix(trimmed, "/cr_") {
-		return false
-	}
-	name, _, _ := strings.Cut(trimmed, " ")
-	return lockFreeCommands[stripBotSuffix(name)]
+	name, _, ok := parseCommand(text)
+	return ok && lockFreeCommands[name]
 }
 
 func (b *Bridge) inSessionTurn(name string, turn func()) {
@@ -97,11 +114,17 @@ func (b *Bridge) inSessionTurn(name string, turn func()) {
 }
 
 func (b *Bridge) targetSessionFor(chatID int64, text string) string {
-	trimmed := strings.TrimSpace(text)
-	cmd, arg, _ := strings.Cut(trimmed, " ")
-	if stripBotSuffix(cmd) == "/cr_restart" {
-		if name := strings.TrimSpace(arg); name != "" {
-			return name
+	name, arg, ok := parseCommand(text)
+	if ok {
+		switch name {
+		case "/cr_restart":
+			if arg != "" {
+				return arg
+			}
+		case "/cr_new":
+			if newName, _, _ := strings.Cut(arg, " "); newName != "" {
+				return newName
+			}
 		}
 	}
 	return b.activeSessionName(chatID)

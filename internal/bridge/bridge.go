@@ -167,7 +167,7 @@ func (b *Bridge) handleMessage(ctx context.Context, chatID int64, target string,
 		b.handleUpload(ctx, chatID, target, uploadedFile{
 			fileID: photo.FileID, fileName: photoFileName(photo), caption: msg.Caption,
 		})
-	case strings.HasPrefix(msg.Text, "/cr_"):
+	case isCrCommand(msg.Text):
 		b.handleCommand(ctx, chatID, target, msg.Text)
 	case strings.TrimSpace(msg.Text) != "":
 		b.forwardToSession(ctx, chatID, target, msg.Text)
