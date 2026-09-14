@@ -33,7 +33,7 @@ Repo: Go, module `github.com/yabanci/claude-remote`. Bridge between Telegram and
   dispatch wiring, `internal/bridge/state.go`, or `internal/bridge/harness_test.go`'s
   `awaitStop`/shutdown helpers in this pass — those are being edited live outside this loop.
 
-## WIP audit findings (11.09.2026) — all four fixed (12.09.2026)
+## WIP audit findings (11.09.2026) — RESOLVED after 5 review rounds (14.09.2026)
 
 A fresh audit of the concurrent-dispatch design (`bridge.go`'s `dispatch`, `state.go`'s
 `sessionLocks`/`bindOwner`) found four real bugs the design introduced, none of which existed
@@ -305,6 +305,51 @@ Verified together (after round 4's fixes): `go build ./...`, `go vet ./...`, `go
 `golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
 all green, including 80/80 isolated runs of the previously-flaky `/cr_send` symlink test (gotcha
 #36 is now resolved, not just documented).
+
+### Round 5 (scoped confirmation review, 14.09.2026) — clean
+
+Round 4 was a full re-audit and came back clean of the recurring bug class; its own fix (commit
+`c7b055d`, closing round 4's should-fix items) had not itself been independently checked, so round
+5 reviewed *that specific diff* rather than re-auditing the whole design again — proportionate to
+what had actually changed since the last clean full audit. Verdict: ready, no blocking, no
+should-fix. It mutation-verified all three of round 4's fix claims independently (including
+reproducing the `cmdSend` context bug under CPU contention when an idle-machine run had shown
+nothing, and correctly not reporting a false negative) and found three cosmetic nitpicks, fixed in
+`1aec8fc`: `deliveryContext` had an unused receiver (made a package-level function); the new
+`cmdNew` test's pre-seed step silently bypassed its own stall via a raw embedded-field selector
+(named `seedAlreadyRunning` instead); the same test's closing wait polled a value the failure path
+itself resets, occasionally burning a 10s generic timeout instead of failing at the intended
+assertion (switched to polling `lastSentKeys()`, which the reset never touches). Re-verified the
+round-4 combined mutation against the fixed test: 15/15 runs now fail in ~0.5s, none hit the 10s
+timeout.
+
+### Summary — five rounds, three real bugs, now clean
+
+1. Fix (`42257d6`): the four originally-audited bugs (bootstrap TOCTOU, wrong lock key, `/cr_kill`
+   restart generation race, unrecovered panic).
+2. Round 1 review → fix (`6799890`): `forwardToSession`/`handleUpload` re-derived the active
+   session a second time after locking.
+3. Round 2 review → fix (`57a55b8`): `handleCommand` (feeding `cmdRestart`/`cmdSend`) had the same
+   bug, missed by round 1.
+4. Round 3 review → fix (`bf594b4`): `cmdNew` started/bumped a session without holding *that*
+   session's own lock — same bug class, different command; plus closed a real test-coverage gap at
+   the three sites round 1 fixed.
+5. Round 4 review → fix (`c7b055d`): first clean verdict on the recurring class (independently
+   re-enumerated all 15 relevant call sites); found and fixed a real `cmdSend` production defect
+   (missing shutdown-safe delivery context — also the true root cause of gotcha #36's flake, not
+   merely its trigger) plus a round-3 test that didn't test its own claim.
+6. Round 5 review → fix (`1aec8fc`): confirmed round 4's fixes are correct; three cosmetic
+   nitpicks, no behavior change.
+
+The "lock key == acted-on session" invariant now holds at every call site that takes a lock, by
+construction (`targetSessionFor` has exactly one caller, `inSessionTurn` exactly two, both closing
+over the same resolved value used for the actual action). Deliberately NOT fixed, documented as an
+explicit open architectural question rather than a bug: message-ordering across dispatch goroutines
+from consecutive `getUpdates` polls (not just one batch) is not FIFO, with a demonstrated-plausible
+blast radius including `/cr_use` racing `/cr_kill` — see round 3's and round 4's notes above for
+the corrected description and a named cheap partial mitigation. This needs an explicit decision on
+priority/approach (a FIFO lock is an architectural change, not a mechanical one), not a drive-by
+fix, before it's touched.
 
 ## Tasks
 
