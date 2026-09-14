@@ -353,6 +353,32 @@ fix, before it's touched.
 
 ## Tasks
 
+- [ ] **Diagnose and fix `TestLiveSecondTurnDoesNotRepeatTheFirst` (skipped 14.09.2026, not
+  deleted — revisit).** Fails identically on both `ubuntu-latest` and `macos-latest`: the
+  second turn's reply contains the whole pane (both turns) instead of just its own diff. Five
+  fix attempts, each ruling something out — full history in
+  `references/projects/claude_remote_gotchas.md` #37 and PR #18's commits `77126a5`..`d99deae`.
+  Two real bugs WERE found and fixed along the way (kept, verified, benefit real usage too):
+  `DiffTail` didn't tolerate differing trailing-blank-line padding between two `capture-pane`
+  snapshots (`settle.go`'s `trimTrailingBlankLines`), and `TailAfterPrompt` couldn't recover an
+  echo wrapped across two pane lines with no `>`/`❯` marker (`tail.go`'s `tailAfterWrappedEcho`).
+  What's still unexplained: even after making the e2e harness's shell prompt short,
+  deterministic, and confirmed NOT wrapping (`e2e_test.go`'s `deterministicShellCommand`), the
+  SAME symptom persists — the cold-start command's own echo appears duplicated (once bare, once
+  after the ambient prompt) in the captured pane, on both platforms, regardless of command
+  length. This rules out wrapping as the cause of this specific remaining symptom. Leading
+  hypothesis, not yet verified: `WaitForSettle`'s very first stability-check capture (right
+  after `ColdStartDelay`) may be landing in the narrow window after the cold-start command was
+  typed but before its Enter keypress was actually processed by the shell — a state that looks
+  "stable" (nothing changing yet) but isn't the real settle point. Bumping `ColdStartDelayMS`
+  from 1000 to 2500 did NOT fix it, which weakens but doesn't rule out this hypothesis (the
+  extra delay is before the exec even runs if Enter itself is what's slow to register, not the
+  bash startup after it). Next step if picked back up: needs actual tmux access to observe the
+  cold-start sequence capture-by-capture (this session's sandbox has none — see gotcha #32) —
+  add temporary diagnostic logging to `ensureRunning`/`WaitForSettle` dumping each poll's raw
+  capture, run locally with real tmux, read what actually happens frame-by-frame instead of
+  inferring from CI's final-state-only failure output.
+
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and
   called `os.Exit` directly, so `printUsage`, the `version`/`help` branches, and the
   unknown-subcommand path had no way to be exercised without spawning the binary.
