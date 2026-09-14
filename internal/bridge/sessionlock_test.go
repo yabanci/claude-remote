@@ -107,7 +107,7 @@ func TestCrRestartLocksTheExplicitTargetNotTheCallersActiveSession(t *testing.T)
 	awaitSignal(t, runner.entered, "the long question to reach session \"work\"")
 
 	h.tg.enqueue(textUpdateFromChat(3, chatA, "/cr_restart work"))
-	time.Sleep(stallGracePeriod)
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
 
 	assert.NotContains(t, runner.callLog(), "Kill:work",
 		"/cr_restart work from another chat must wait for chatB's in-flight turn on \"work\", "+
@@ -197,6 +197,64 @@ func TestABareCrNewCreatesItsOwnSessionWithoutWaitingOnAnUnrelatedActiveSessions
 	h.awaitStop(done)
 }
 
+type startStallingRunner struct {
+	*fakeRunner
+	holdSession string
+	entered     chan struct{}
+	release     chan struct{}
+	once        sync.Once
+}
+
+func newStartStallingRunner(holdSession string) *startStallingRunner {
+	return &startStallingRunner{
+		fakeRunner:  newFakeRunner(),
+		holdSession: holdSession,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+}
+
+func (r *startStallingRunner) Start(session, dir, command string) error {
+	if session == r.holdSession {
+		r.once.Do(func() { close(r.entered) })
+		<-r.release
+	}
+	return r.fakeRunner.Start(session, dir, command)
+}
+
+func TestCrNewHoldsTheNewSessionsOwnLockWhileStartingIt(t *testing.T) {
+	const chatID int64 = 1
+	cfg := testConfigFor(t)
+	workDir := t.TempDir()
+	runner := newStartStallingRunner("work")
+	require.NoError(t, runner.fakeRunner.Start("work", workDir, "claude"))
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "/cr_new work "+workDir)}
+
+	cancel, done := h.runInBackground()
+	awaitSignal(t, runner.entered, "cmdNew's Start(\"work\") to be entered")
+
+	h.tg.enqueue(textUpdateFromChat(2, chatID, "second question"))
+	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
+
+	workPane, err := runner.CapturePane("work", 0)
+	require.NoError(t, err)
+	assert.NotContains(t, workPane, "second question",
+		"a plain message dispatched while /cr_new's own Start(\"work\") is still in flight must "+
+			"wait -- cmdNew must hold \"work\"'s own lock for the whole time it is creating the "+
+			"session, not just avoid the caller's unrelated active session")
+
+	close(runner.release)
+	waitUntil(t, func() bool {
+		p, _ := runner.CapturePane("work", 0)
+		return strings.Contains(p, "second question")
+	})
+
+	cancel()
+	h.awaitStop(done)
+}
+
 func TestAQueuedPlainMessageStaysOnItsFrozenTargetEvenIfActiveSessionChangesWhileItWaits(t *testing.T) {
 	const chatID int64 = 1
 	cfg := testConfigFor(t)
@@ -262,12 +320,18 @@ func TestAQueuedCrSendStaysOnItsFrozenTargetEvenIfActiveSessionChangesWhileItWai
 	giveQueuedTurnTimeToStartWaitingOnTheLock(stallGracePeriod)
 
 	close(runner.release)
-	waitUntil(t, func() bool { return len(h.tg.documents()) > 0 })
+	waitUntil(t, func() bool {
+		return len(h.tg.documents()) > 0 ||
+			strings.Contains(strings.Join(h.tg.messages(), "\n"), "файл не найден")
+	})
 
-	assert.NotContains(t, strings.Join(h.tg.messages(), "\n"), "файл не найден",
+	assert.Equal(t, []string{"note.txt"}, h.tg.documents(),
 		"a bare /cr_send, queued while the active session was still \"main\", must read the file "+
 			"from \"main\" -- the session its turn actually locked -- even though /cr_use switched "+
 			"the chat's active session to \"work\" while it was waiting")
+	assert.NotContains(t, strings.Join(h.tg.messages(), "\n"), "файл не найден",
+		"cmdSend must not fall back to an error reply when the file exists in the frozen "+
+			"target session's directory")
 
 	cancel()
 	h.awaitStop(done)

@@ -220,6 +220,92 @@ Verified together (after round 3's fixes): `go build ./...`, `go vet ./...`, `go
 `golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
 all green (aside from gotcha #36's known pre-existing flake, unrelated to this round).
 
+### Round 4 (independent review, 14.09.2026) — no new bug of the recurring class
+
+For the first time, the reviewer independently enumerated every caller of `targetSessionFor`,
+`resolveSession`, `activeSessionName`, and `inSessionTurn` (fifteen call sites) and confirmed the
+"lock key == acted-on session" invariant now holds everywhere a lock is actually taken; the
+lock-free commands correctly hold no lock by design. Ship verdict: ready, no blocking bug. It did
+find two mutation-proven should-fix items and one plausible-but-unproven one, all now fixed:
+
+**Fixed — `cmdSend`'s `SendDocument` call used the raw cancellable handler `ctx` instead of the
+`WithoutCancel`+`replyDeliveryTimeout` wrapper every other reply path uses.** This was not just a
+test-only concern: a real shutdown during a `/cr_send` upload would abort it while every other
+reply survives for `replyDeliveryTimeout` — `cmdSend` had silently opted out of protection added
+deliberately in an earlier commit. It also turned out to be the actual root cause of gotcha #36's
+flake (see below), not merely triggered by it. Extracted `deliveryContext(ctx)` (previously
+`reply`/`replyWithMenu` each inlined the same two-line wrap) and used it in all three places.
+Mutation-verified: unpatched, 3 failures in 80 isolated runs of the affected test; patched, 0
+failures in 80 runs (60 by the reviewer, 20 confirming independently).
+
+**Fixed — the `cmdNew` regression test added in round 3 didn't test what its assertion message
+claimed.** It proved `/cr_new` doesn't act on the caller's unrelated active session, but not that
+it holds the *new* session's own lock throughout — the reviewer mutation-proved this by removing
+the `/cr_new` case from `targetSessionFor` **and** simultaneously adding `/cr_new` to
+`lockFreeCommands` (i.e. reintroducing round 3's exact blocking bug in its "no lock taken at all"
+form): the round-3 test still passed, 3/3, whole suite green. Added
+`TestCrNewHoldsTheNewSessionsOwnLockWhileStartingIt`, which stalls a runner inside `Start("work")`
+and asserts a plain message dispatched meanwhile cannot reach `work`'s pane until the stall is
+released. First draft of this test was itself subtly wrong — the queued plain message resolved to
+the not-yet-existing "work" session and called `Start("work")` too via `ensureRunning`'s
+not-exists branch, coincidentally colliding with the same stall point regardless of locking, so it
+passed even under the exact mutation it was meant to catch. Fixed by pre-seeding "work" as already
+running in the fake runner before the test starts, so only `cmdNew`'s own `Start` call is stalled
+and the queued message's `ensureRunning` takes its already-exists fast path instead. Re-verified
+against the same combined mutation: now fails with the intended message; passes on the real fix.
+
+**Fixed (defense in depth, not proven live) — `cmdUse`'s `hasSession`+`setActiveSession` were two
+separate `b.state` critical sections.** The reviewer could not construct the interleaving through
+the public API (no injectable seam between the two calls) and reported it as a hypothesis, not a
+demonstrated failure. Collapsed into one atomic `useSession(chatID, name) bool` regardless, since
+the fix is three lines and removes the question entirely rather than leaving it as a standing "is
+this actually fine" doubt for the next person to re-derive.
+
+**Correction to the deferred message-ordering item (not a new finding — fixing the description of
+the one from round 3):** the "test harness gives the first goroutine a head start" explanation is
+right but incomplete — `Run()` never waits for a dispatched goroutine before fetching the next
+batch, so the same reordering risk spans consecutive `getUpdates` polls, not just one batch; only
+the httptest round-trip latency (absent in real production dispatch) is what currently prevents
+reproduction. The blast radius is also wider than "two messages to the same session out of order":
+`/cr_use` followed by `/cr_kill` are both lock-free with nothing serializing them, and `cmdKill`
+resolves at execution time, so a fast-enough `/cr_kill` could kill whatever was active *before* a
+concurrently-processed `/cr_use` took effect — destructive, and something the old serial `Run()`
+could not do. Still deferred (architectural, not mechanical — a FIFO lock with target resolution
+moved earlier), but a cheap partial mitigation was named for a future pass: apply `/cr_use`'s
+active-pointer write inline on the `Run` goroutine before dispatching (no I/O involved), so it is
+strictly ordered relative to every later update's own resolution.
+
+**Correction to gotcha #36 (`claude_remote_gotchas.md`):** round 3's diagnosis ("a test-harness
+race, not a bridge logic bug") was half right. The harness recording the document server-side
+before the client call returns is real and is the *trigger*, but `cmdSend`'s use of the raw
+cancellable `ctx` is why that race was ever observable, and it is a genuine (if narrow) production
+defect independent of any test. Fixed above; gotcha entry updated to reflect the corrected,
+complete root cause and mark it resolved.
+
+Nitpicks fixed: `handleCommand` discarded `parseCommand`'s `ok` (an unreachable-today "неизвестная
+команда , см. /cr_help" with an empty name if that branch were ever reached — now replies plainly
+and returns instead); `targetSessionFor`'s redundant `if ok { switch … }` simplified (when `!ok`,
+`name` is `""` and matches no case, so the wrapper decided nothing); one bare `time.Sleep` inconsistent
+with the file's own house-style `giveQueuedTurnTimeToStartWaitingOnTheLock` helper renamed to match;
+the `/cr_send` regression test's assertion improved so a regression fails at an informative
+message instead of the generic `waitUntil` timeout (it was asserting on the wrong signal — the
+fix required distinguishing `/cr_use`'s own legitimate reply from `cmdSend`'s error text, not just
+checking "any message appeared").
+
+Nitpicks not fixed, judged acceptable or out of scope by the reviewer: `sessionLocks.of`'s
+already-documented unbounded growth (further widened by `/cr_new`, still owner-only and
+slow-growing); `bootstrapOwner`'s silent message drop on a lost bootstrap race (fail-closed and
+therefore acceptable, a reply would just be kinder); `deliverAnswer`'s 5-argument count (accepted
+in round 2, still true); `/cr_send` still not lock-free like `/cr_help`/`/cr_sessions`/`/cr_use`
+(cannot be done safely until `handleCommand`'s lock-free path threads a real `target` instead of
+hardcoding `""`, itself only a latent risk today since no lock-free command reads `target`) —
+left for a future pass, not blocking.
+
+Verified together (after round 4's fixes): `go build ./...`, `go vet ./...`, `gofmt -l .`,
+`golangci-lint run ./...` (0 issues), `deadcode ./...` (clean), `go test ./... -race -count=2`
+all green, including 80/80 isolated runs of the previously-flaky `/cr_send` symlink test (gotcha
+#36 is now resolved, not just documented).
+
 ## Tasks
 
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and

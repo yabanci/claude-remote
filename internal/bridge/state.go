@@ -114,17 +114,15 @@ func (b *Bridge) inSessionTurn(name string, turn func()) {
 }
 
 func (b *Bridge) targetSessionFor(chatID int64, text string) string {
-	name, arg, ok := parseCommand(text)
-	if ok {
-		switch name {
-		case "/cr_restart":
-			if arg != "" {
-				return arg
-			}
-		case "/cr_new":
-			if newName, _, _ := strings.Cut(arg, " "); newName != "" {
-				return newName
-			}
+	name, arg, _ := parseCommand(text)
+	switch name {
+	case "/cr_restart":
+		if arg != "" {
+			return arg
+		}
+	case "/cr_new":
+		if newName, _, _ := strings.Cut(arg, " "); newName != "" {
+			return newName
 		}
 	}
 	return b.activeSessionName(chatID)
@@ -181,17 +179,14 @@ func (b *Bridge) bindOwner(userID, chatID int64) error {
 	return nil
 }
 
-func (b *Bridge) hasSession(name string) bool {
+func (b *Bridge) useSession(chatID int64, name string) bool {
 	b.state.Lock()
 	defer b.state.Unlock()
-	_, ok := b.cfg.Sessions[name]
-	return ok
-}
-
-func (b *Bridge) setActiveSession(chatID int64, name string) {
-	b.state.Lock()
-	defer b.state.Unlock()
+	if _, ok := b.cfg.Sessions[name]; !ok {
+		return false
+	}
 	b.activeSession[chatID] = name
+	return true
 }
 
 func (b *Bridge) activeSessionName(chatID int64) string {

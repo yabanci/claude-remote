@@ -48,7 +48,11 @@ func stripBotSuffix(cmd string) string {
 }
 
 func (b *Bridge) handleCommand(ctx context.Context, chatID int64, target, text string) {
-	cmd, arg, _ := parseCommand(text)
+	cmd, arg, ok := parseCommand(text)
+	if !ok {
+		b.reply(ctx, chatID, fmt.Sprintf("не похоже на команду бриджа: %s", text))
+		return
+	}
 
 	switch cmd {
 	case "/cr_status":
@@ -114,11 +118,10 @@ func (b *Bridge) cmdUse(ctx context.Context, chatID int64, name string) {
 		b.reply(ctx, chatID, "укажи имя: /cr_use <имя>")
 		return
 	}
-	if !b.hasSession(name) {
+	if !b.useSession(chatID, name) {
 		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не найдена, см. /cr_sessions", name))
 		return
 	}
-	b.setActiveSession(chatID, name)
 	b.reply(ctx, chatID, fmt.Sprintf("активная сессия: %s", name))
 }
 
@@ -253,7 +256,9 @@ func (b *Bridge) cmdSend(ctx context.Context, chatID int64, target, arg string) 
 		b.reply(ctx, chatID, fmt.Sprintf("файл не найден: %s", path))
 		return
 	}
-	if err := b.tg.SendDocument(ctx, chatID, path); err != nil {
+	sendCtx, cancel := b.deliveryContext(ctx)
+	defer cancel()
+	if err := b.tg.SendDocument(sendCtx, chatID, path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить файл: %v", err))
 	}
 }
