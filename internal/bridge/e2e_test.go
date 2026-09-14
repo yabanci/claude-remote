@@ -26,7 +26,7 @@ import (
 	"github.com/yabanci/claude-remote/internal/tmux"
 )
 
-const deterministicShellCommand = "exec env PS1='$ ' /bin/bash --norc --noprofile -i"
+const deterministicShellCommand = "exec bash --norc --noprofile"
 
 type liveHarness struct {
 	t       *testing.T
@@ -95,7 +95,7 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg.Settle.PollIntervalMS = 400
 	cfg.Settle.StableRounds = 4
 	cfg.Settle.HardCapSeconds = 45
-	cfg.Settle.ColdStartDelayMS = 1000
+	cfg.Settle.ColdStartDelayMS = 2500
 	cfg.Settle.PostSendDelayMS = 1500
 
 	tg := newTestTelegramClient(server.URL)
