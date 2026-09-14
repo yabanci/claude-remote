@@ -14,8 +14,8 @@ const (
 )
 
 func DiffTail(before, after string) string {
-	beforeLines := strings.Split(before, "\n")
-	afterLines := strings.Split(after, "\n")
+	beforeLines := trimTrailingBlankLines(strings.Split(before, "\n"))
+	afterLines := trimTrailingBlankLines(strings.Split(after, "\n"))
 
 	carried := carriedOverLines(beforeLines, afterLines)
 	if scrollbackLikelyEvicted(carried, beforeLines, afterLines) {
@@ -31,6 +31,14 @@ func carriedOverLines(beforeLines, afterLines []string) int {
 		}
 	}
 	return 0
+}
+
+func trimTrailingBlankLines(lines []string) []string {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return lines[:end]
 }
 
 func startsWith(lines, prefix []string) bool {

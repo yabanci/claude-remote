@@ -85,6 +85,19 @@ func TestDiffTailFallsBackWhenOnlyATrailingLineSurvivedTheShift(t *testing.T) {
 	assert.NotContains(t, got, "after line")
 }
 
+func TestDiffTailIgnoresTrailingBlankPaneRowsThatDifferInCountBetweenCaptures(t *testing.T) {
+	before := "prompt$\n echo one\none\nprompt$\n\n\n\n"
+	after := "prompt$\n echo one\none\nprompt$\n echo two\ntwo\nprompt$\n"
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, "echo two\ntwo\nprompt$", got,
+		"a real tmux capture-pane pads trailing rows with blanks up to the pane's viewport "+
+			"height, and that padding count shrinks as more real content is typed -- before and "+
+			"after must be aligned on their real content, not on a byte-for-byte line count "+
+			"that includes however much blank padding each capture happened to carry")
+}
+
 func fullHistoryPane(linePrefix string, lines int) string {
 	return strings.Join(historyRows(linePrefix, lines), "\n")
 }
