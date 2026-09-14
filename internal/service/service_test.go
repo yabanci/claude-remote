@@ -1,11 +1,13 @@
 package service
 
 import (
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,8 +19,10 @@ type call struct {
 }
 
 type fakeRunner struct {
-	calls  []call
-	failOn string
+	calls        []call
+	failOn       string
+	statusOutput []byte
+	statusErr    error
 }
 
 func (f *fakeRunner) Run(name string, args ...string) error {
@@ -31,6 +35,9 @@ func (f *fakeRunner) Run(name string, args ...string) error {
 
 func (f *fakeRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, call{name, args})
+	if f.statusOutput != nil || f.statusErr != nil {
+		return f.statusOutput, f.statusErr
+	}
 	if name == f.failOn {
 		return nil, fmt.Errorf("simulated failure for %s", name)
 	}
@@ -68,7 +75,7 @@ func platformCases() []platformCase {
 			platform:    systemd{},
 			unitRelPath: []string{".config", "systemd", "user", "claude-remote.service"},
 			tool:        "systemctl",
-			mustContain: "ExecStart=/usr/local/bin/claude-remote run",
+			mustContain: `ExecStart="/usr/local/bin/claude-remote" run`,
 		},
 	}
 }
@@ -120,6 +127,27 @@ func TestUninstallIsFineWhenNothingInstalled(t *testing.T) {
 	}
 }
 
+func TestUninstallPropagatesDisableFailure(t *testing.T) {
+	for _, tc := range platformCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			runner := &fakeRunner{}
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			require.NoError(t, mgr.Install())
+			runner.failOn = tc.tool
+
+			err := mgr.Uninstall()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.tool)
+
+			unitPath := filepath.Join(append([]string{home}, tc.unitRelPath...)...)
+			assert.FileExists(t, unitPath, "a service that failed to stop should not have its unit file removed")
+		})
+	}
+}
+
 func TestStatusReportsNotInstalledWhenToolFails(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,16 +163,99 @@ func TestStatusReportsNotInstalledWhenToolFails(t *testing.T) {
 	}
 }
 
-func TestStatusReturnsToolOutput(t *testing.T) {
-	for _, tc := range platformCases() {
-		t.Run(tc.name, func(t *testing.T) {
+func TestLaunchdStatusReportsRunningWithPID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 0;
+	"PID" = 4242;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Contains(t, status, `"PID" = 4242`)
+}
+
+func TestLaunchdStatusReportsStoppedWhenLastExitStatusIsZero(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 0;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusStopped, status)
+}
+
+func TestLaunchdStatusReportsFailedWhenLastExitStatusIsNonZero(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte(`{
+	"LastExitStatus" = 1;
+	"Label" = "dev.claude-remote.bridge";
+};
+`)}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusFailed, status)
+	assert.NotEqual(t, statusNotInstalled, status)
+}
+
+func TestSystemdStatusReportsActiveState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("active\n")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, "active", status)
+}
+
+func TestSystemdStatusReportsFailedDistinctFromNotInstalled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("failed\n"), statusErr: fmt.Errorf("exit status 3")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusFailed, status)
+	assert.NotEqual(t, statusNotInstalled, status)
+}
+
+func TestSystemdStatusReportsStoppedWhenInactive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{statusOutput: []byte("inactive\n"), statusErr: fmt.Errorf("exit status 3")}
+	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+
+	status, err := mgr.Status()
+
+	require.NoError(t, err)
+	assert.Equal(t, statusStopped, status)
+}
+
+func TestSystemdStatusReportsTransitionalStatesDistinctFromNotInstalled(t *testing.T) {
+	for _, state := range []string{"activating", "deactivating", "reloading"} {
+		t.Run(state, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+			runner := &fakeRunner{statusOutput: []byte(state + "\n"), statusErr: fmt.Errorf("exit status 3")}
+			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
 
 			status, err := mgr.Status()
 
 			require.NoError(t, err)
-			assert.Equal(t, "running", status)
+			assert.Equal(t, state, status)
+			assert.NotEqual(t, statusNotInstalled, status)
 		})
 	}
 }
@@ -214,7 +325,7 @@ func TestNewManagerUsesRealExecRunner(t *testing.T) {
 }
 
 func TestExecRunnerRunsRealCommands(t *testing.T) {
-	r := execRunner{}
+	r := newExecRunner()
 
 	require.NoError(t, r.Run("true"))
 	require.Error(t, r.Run("false"))
@@ -222,6 +333,24 @@ func TestExecRunnerRunsRealCommands(t *testing.T) {
 	out, err := r.CombinedOutput("echo", "hello")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", strings.TrimSpace(string(out)))
+}
+
+func TestExecRunnerRunTimesOutOnAHungCommand(t *testing.T) {
+	r := execRunner{timeout: 50 * time.Millisecond}
+
+	err := r.Run("sleep", "5")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCommandTimeout)
+}
+
+func TestExecRunnerCombinedOutputTimesOutOnAHungCommand(t *testing.T) {
+	r := execRunner{timeout: 50 * time.Millisecond}
+
+	_, err := r.CombinedOutput("sleep", "5")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrCommandTimeout)
 }
 
 func TestInstalledServiceCarriesTheSearchPath(t *testing.T) {
@@ -267,4 +396,38 @@ func TestLaunchdLogsGoToTheLogsDirectory(t *testing.T) {
 	assert.NotContains(t, string(data), filepath.Join(home, "Library", "LaunchAgents", "claude-remote.err.log"),
 		"logs do not belong in the agents directory")
 	assert.DirExists(t, filepath.Join(home, "Library", "Logs", "claude-remote"))
+}
+
+func TestLaunchdRenderEscapesXMLSpecialCharacters(t *testing.T) {
+	out := launchd{}.render("/opt/a & b/claude-remote", "/var/log/a&b", "/usr/bin:/bin")
+
+	assert.Contains(t, out, "/opt/a &amp; b/claude-remote")
+	assert.NotContains(t, out, "/opt/a & b/claude-remote",
+		"a raw & inside a <string> element breaks plist XML parsing")
+
+	var doc struct {
+		XMLName xml.Name `xml:"plist"`
+	}
+	require.NoError(t, xml.Unmarshal([]byte(out), &doc), "rendered plist must be well-formed XML")
+}
+
+func TestSystemdRenderQuotesPathsWithSpaces(t *testing.T) {
+	out := systemd{}.render("/opt/a path/claude-remote", "", "/usr/bin:/bin")
+
+	assert.Contains(t, out, `ExecStart="/opt/a path/claude-remote" run`,
+		"an unquoted space in execPath would split systemd's ExecStart into two arguments")
+}
+
+func TestSystemdRenderEscapesEmbeddedQuotes(t *testing.T) {
+	out := systemd{}.render(`/opt/weird"path/claude-remote`, "", "/usr/bin:/bin")
+
+	assert.Contains(t, out, `ExecStart="/opt/weird\"path/claude-remote" run`)
+}
+
+func TestSystemdRenderEscapesPercentSpecifiers(t *testing.T) {
+	out := systemd{}.render(`/opt/%h/claude-remote`, "", `/usr/bin:/opt/%n/bin`)
+
+	assert.Contains(t, out, `ExecStart="/opt/%%h/claude-remote" run`,
+		"an unescaped %h is expanded by systemd into the user's home directory at unit-start time")
+	assert.Contains(t, out, `Environment="PATH=/usr/bin:/opt/%%n/bin"`)
 }

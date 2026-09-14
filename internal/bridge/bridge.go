@@ -2,10 +2,12 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,16 +32,20 @@ const (
 )
 
 type Bridge struct {
-	cfg        config.Config
 	configPath string
 	tg         *telegram.Client
 	runner     Runner
 	log        *slog.Logger
 	stateDir   string
 	offsets    *offsetStore
-	replyTo    int64
 
+	state         sync.Mutex
+	cfg           config.Config
 	activeSession map[int64]string
+
+	turns       *sessionLocks
+	generations *sessionGenerations
+	inflight    sync.WaitGroup
 }
 
 func New(cfg config.Config, configPath string, tg *telegram.Client, runner Runner, log *slog.Logger, stateDir string) *Bridge {
@@ -52,10 +58,14 @@ func New(cfg config.Config, configPath string, tg *telegram.Client, runner Runne
 		stateDir:      stateDir,
 		offsets:       newOffsetStore(stateDir, log),
 		activeSession: make(map[int64]string),
+		turns:         newSessionLocks(),
+		generations:   newSessionGenerations(),
 	}
 }
 
 func (b *Bridge) Run(ctx context.Context) error {
+	defer b.inflight.Wait()
+
 	if err := b.tg.SetMyCommands(ctx, commandMenu()); err != nil {
 		b.log.Warn("set my commands failed", "err", err)
 	}
@@ -76,14 +86,45 @@ func (b *Bridge) Run(ctx context.Context) error {
 		for _, u := range updates {
 			offset = u.UpdateID + 1
 			b.offsets.save(offset)
-			if u.CallbackQuery != nil {
-				b.handleCallback(ctx, u.CallbackQuery)
-				continue
-			}
-			b.handleUpdate(ctx, u)
+			b.dispatch(ctx, u)
 		}
 	}
 	return nil
+}
+
+func (b *Bridge) dispatch(ctx context.Context, u telegram.Update) {
+	b.inflight.Add(1)
+	go func() {
+		defer b.inflight.Done()
+		defer b.recoverFromPanic(ctx, u)
+		if u.CallbackQuery != nil {
+			b.handleCallback(ctx, u.CallbackQuery)
+			return
+		}
+		b.handleUpdate(ctx, u)
+	}()
+}
+
+func (b *Bridge) recoverFromPanic(ctx context.Context, u telegram.Update) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	b.log.Error("recovered from a panic while handling an update",
+		"update_id", u.UpdateID, "panic", r, "stack", string(debug.Stack()))
+	if chatID, ok := chatIDOf(u); ok {
+		b.reply(ctx, chatID, "что-то сломалось при обработке этого сообщения, но бридж жив — попробуй ещё раз")
+	}
+}
+
+func chatIDOf(u telegram.Update) (int64, bool) {
+	if u.Message != nil {
+		return u.Message.Chat.ID, true
+	}
+	if u.CallbackQuery != nil && u.CallbackQuery.Message != nil {
+		return u.CallbackQuery.Message.Chat.ID, true
+	}
+	return 0, false
 }
 
 func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
@@ -94,56 +135,64 @@ func (b *Bridge) handleUpdate(ctx context.Context, u telegram.Update) {
 	if msg.From == nil {
 		return
 	}
-	if b.cfg.NeedsBootstrap() {
-		if !b.bootstrapOwner(ctx, msg.From.ID, msg.Chat.ID) {
-			return
-		}
+	if b.needsBootstrap() {
+		b.bootstrapOwner(ctx, msg.From.ID, msg.Chat.ID)
 		return
 	}
-	if !b.cfg.IsAllowed(msg.From.ID) {
-		b.log.Warn("ignored message from unauthorized sender", "from", msg.From.ID)
-		return
-	}
-	if !b.cfg.IsAllowedChat(msg.Chat.ID) {
-		b.log.Warn("ignored message from a chat that is not the owner's",
-			"chat", msg.Chat.ID, "from", msg.From.ID)
+	if !b.allowedSender(msg.From.ID, msg.Chat.ID) {
+		b.log.Warn("ignored message from an unauthorized sender or chat",
+			"from", msg.From.ID, "chat", msg.Chat.ID)
 		return
 	}
 
 	chatID := msg.Chat.ID
-	b.replyTo = msg.MessageID
+	ctx = withReplyTo(ctx, msg.MessageID)
+
+	if runsWhileSessionIsBusy(msg.Text) {
+		b.handleCommand(ctx, chatID, "", msg.Text)
+		return
+	}
+	target := b.targetSessionFor(chatID, msg.Text)
+	b.inSessionTurn(target, func() { b.handleMessage(ctx, chatID, target, msg) })
+}
+
+func (b *Bridge) handleMessage(ctx context.Context, chatID int64, target string, msg *telegram.Message) {
 	switch {
 	case msg.Document != nil:
-		b.handleUpload(ctx, chatID, msg.Document.FileID, msg.Document.FileName, msg.Caption)
+		b.handleUpload(ctx, chatID, target, uploadedFile{
+			fileID: msg.Document.FileID, fileName: msg.Document.FileName, caption: msg.Caption,
+		})
 	case msg.LargestPhoto() != nil:
 		photo := msg.LargestPhoto()
-		b.handleUpload(ctx, chatID, photo.FileID, photoFileName(photo), msg.Caption)
-	case strings.HasPrefix(msg.Text, "/cr_"):
-		b.handleCommand(ctx, chatID, msg.Text)
+		b.handleUpload(ctx, chatID, target, uploadedFile{
+			fileID: photo.FileID, fileName: photoFileName(photo), caption: msg.Caption,
+		})
+	case isCrCommand(msg.Text):
+		b.handleCommand(ctx, chatID, target, msg.Text)
 	case strings.TrimSpace(msg.Text) != "":
-		b.forwardToSession(ctx, chatID, msg.Text)
+		b.forwardToSession(ctx, chatID, target, msg.Text)
 	default:
 		b.log.Warn("message carried nothing the bridge understands", "chat", chatID)
 		b.reply(ctx, chatID, "не понял это сообщение: умею текст, файлы и фото")
 	}
-	b.replyTo = 0
 }
 
 func (b *Bridge) handleCallback(ctx context.Context, q *telegram.CallbackQuery) {
 	if q.From == nil || q.Message == nil {
 		return
 	}
-	if !b.cfg.IsAllowed(q.From.ID) || !b.cfg.IsAllowedChat(q.Message.Chat.ID) {
+	chatID := q.Message.Chat.ID
+	if !b.allowedSender(q.From.ID, chatID) {
 		b.log.Warn("ignored callback from unauthorized sender or chat",
-			"from", q.From.ID, "chat", q.Message.Chat.ID)
+			"from", q.From.ID, "chat", chatID)
 		return
 	}
 	if err := b.tg.AnswerCallback(ctx, q.ID, "отправил "+q.Data); err != nil {
 		b.log.Warn("answer callback failed", "err", err)
 	}
-	b.replyTo = q.Message.MessageID
-	b.forwardToSession(ctx, q.Message.Chat.ID, q.Data)
-	b.replyTo = 0
+	ctx = withReplyTo(ctx, q.Message.MessageID)
+	target := b.activeSessionName(chatID)
+	b.inSessionTurn(target, func() { b.forwardToSession(ctx, chatID, target, q.Data) })
 }
 
 func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
@@ -166,35 +215,32 @@ func (b *Bridge) showTyping(ctx context.Context, chatID int64) (stop func()) {
 	return func() { once.Do(func() { close(done) }) }
 }
 
-func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) bool {
-	candidate := b.cfg
-	candidate.AllowedUsers = []int64{userID}
-	candidate.AllowedChats = []int64{chatID}
-
-	if err := config.Save(b.configPath, candidate); err != nil {
+func (b *Bridge) bootstrapOwner(ctx context.Context, userID, chatID int64) {
+	switch err := b.bindOwner(userID, chatID); {
+	case err == nil:
+		b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
+	case errors.Is(err, errAlreadyBound):
+		b.log.Warn("bootstrap lost the race to another sender, ignoring", "user_id", userID, "chat_id", chatID)
+	default:
 		b.log.Error("bootstrap: save config failed, refusing to bind", "err", err)
 		b.reply(ctx, chatID, "не смог закрепить владельца в конфиге, поэтому ничего не выполняю. Проверь права на файл конфигурации и напиши снова.")
-		return false
 	}
-
-	b.cfg = candidate
-	b.log.Warn("bound to the first sender", "user_id", userID, "chat_id", chatID)
-	b.reply(ctx, chatID, fmt.Sprintf(
-		"привязан к пользователю %d в этом чате — только отсюда и только он.\n\nПовтори сообщение, оно будет первым выполненным.", userID))
-	return true
 }
 
 type sessionRef struct {
-	name    string
-	dir     string
-	command string
+	name       string
+	dir        string
+	command    string
+	generation uint64
 }
 
 func (b *Bridge) resolveSession(chatID int64, name string) (sessionRef, error) {
 	if name == "" {
 		name = b.activeSessionName(chatID)
 	}
-	sc, ok := b.cfg.Sessions[name]
+	sc, ok := b.sessionConfig(name)
 	if !ok {
 		return sessionRef{}, fmt.Errorf("сессия %q не настроена", name)
 	}
@@ -205,60 +251,55 @@ func (b *Bridge) resolveSession(chatID int64, name string) (sessionRef, error) {
 	return sessionRef{name: name, dir: dir, command: sc.Command}, nil
 }
 
-func (b *Bridge) activeSessionName(chatID int64) string {
-	if name, ok := b.activeSession[chatID]; ok {
-		if _, exists := b.cfg.Sessions[name]; exists {
-			return name
-		}
-	}
-	return b.cfg.DefaultSession
-}
-
-func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, text string) {
-	s, err := b.resolveSession(chatID, "")
+func (b *Bridge) forwardToSession(ctx context.Context, chatID int64, target, text string) {
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
-	if !b.ensureRunning(ctx, chatID, s) {
+	s, ok := b.ensureRunning(ctx, chatID, s)
+	if !ok {
 		return
 	}
 	if b.heldBackByOpenDialog(ctx, chatID, s, text) {
 		return
 	}
 
-	before, err := b.runner.CapturePane(s.name, captureHistoryLines)
+	before, err := b.capturePane(s, captureHistoryLines)
 	if err != nil {
 		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
 	}
 
-	if !b.sendAndAwait(ctx, chatID, s.name, text) {
+	if !b.sendAndAwait(ctx, chatID, s, text) {
 		return
 	}
-	b.deliverAnswer(ctx, chatID, s.name, before, text)
+	b.deliverAnswer(ctx, chatID, s, before, text)
 }
 
-func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) bool {
+func (b *Bridge) ensureRunning(ctx context.Context, chatID int64, s sessionRef) (sessionRef, bool) {
 	if b.runner.Exists(s.name) {
-		return true
+		s.generation = b.generations.current(s.name)
+		return s, true
 	}
 	if err := b.runner.Start(s.name, s.dir, s.command); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить сессию: %v", err))
-		return false
+		return sessionRef{}, false
 	}
+	s.generation = b.generations.bump(s.name)
 
-	time.Sleep(b.cfg.Settle.ColdStartDelay())
-	if _, err := WaitForSettle(b.watchVisible(s.name), b.cfg.Settle, nil); err != nil {
+	settle := b.settle()
+	time.Sleep(settle.ColdStartDelay())
+	if _, err := WaitForSettle(ctx, b.watchVisible(s), settle, b.noticeSessionStillStarting(ctx, chatID, s.name)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось дождаться запуска сессии: %v", err))
-		return false
+		return sessionRef{}, false
 	}
-	return true
+	return s, true
 }
 
 func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessionRef, text string) bool {
-	visible, err := b.runner.CapturePane(s.name, visiblePaneOnly)
+	visible, err := b.capturePane(s, visiblePaneOnly)
 	if err != nil {
 		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return true
@@ -284,8 +325,8 @@ func (b *Bridge) heldBackByOpenDialog(ctx context.Context, chatID int64, s sessi
 	return false
 }
 
-func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text string) bool {
-	if err := b.runner.SendKeys(name, text); err != nil {
+func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, s sessionRef, text string) bool {
+	if err := b.runner.SendKeys(s.name, text); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить текст в сессию: %v", err))
 		return false
 	}
@@ -293,24 +334,25 @@ func (b *Bridge) sendAndAwait(ctx context.Context, chatID int64, name, text stri
 	stopTyping := b.showTyping(ctx, chatID)
 	defer stopTyping()
 
-	time.Sleep(b.cfg.Settle.PostSendDelay())
-	if _, err := WaitForSettle(b.watchVisible(name), b.cfg.Settle, nil); err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+	settle := b.settle()
+	time.Sleep(settle.PostSendDelay())
+	if _, err := WaitForSettle(ctx, b.watchVisible(s), settle, b.noticeAnswerStillComing(ctx, chatID)); err != nil {
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return false
 	}
 	return true
 }
 
-func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, text string) {
-	after, err := b.runner.CapturePane(name, captureHistoryLines)
+func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, s sessionRef, before, text string) {
+	after, err := b.capturePane(s, captureHistoryLines)
 	if err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
 	}
 
-	visible, err := b.runner.CapturePane(name, visiblePaneOnly)
+	visible, err := b.capturePane(s, visiblePaneOnly)
 	if err != nil {
-		b.reportCaptureFailure(ctx, chatID, name, err)
+		b.reportCaptureFailure(ctx, chatID, s.name, err)
 		return
 	}
 	if menu, isMenu := ParseMenu(visible); isMenu {
@@ -326,7 +368,7 @@ func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, 
 	reply, rawFallback := FormatReply(produced)
 	if rawFallback {
 		b.log.Warn("reply carried no known TUI marker, sent raw pane text instead",
-			"session", name, "expected_markers", ExpectedMarkers())
+			"session", s.name, "expected_markers", ExpectedMarkers())
 	}
 	if reply == "" {
 		reply = "(сессия ничего не вывела — см. /cr_status)"
@@ -335,6 +377,11 @@ func (b *Bridge) deliverAnswer(ctx context.Context, chatID int64, name, before, 
 }
 
 func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name string, err error) {
+	if errors.Is(err, errSessionReplaced) {
+		b.reply(ctx, chatID, fmt.Sprintf(
+			"сессия %q перезапустилась, пока готовился ответ на предыдущий вопрос — тот ответ потерян.\n\nПовтори вопрос.", name))
+		return
+	}
 	if !b.runner.Exists(name) {
 		b.reply(ctx, chatID, fmt.Sprintf(
 			"сессия %q пропала, пока готовился ответ — он потерян.\n\nПодними её: /cr_restart", name))
@@ -343,30 +390,45 @@ func (b *Bridge) reportCaptureFailure(ctx context.Context, chatID int64, name st
 	b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
 }
 
-func (b *Bridge) watchVisible(name string) CaptureFunc {
-	return func() (string, error) { return b.runner.CapturePane(name, visiblePaneOnly) }
+var errSessionReplaced = errors.New("session was killed and restarted under the same name mid-turn")
+
+func (b *Bridge) capturePane(s sessionRef, lines int) (string, error) {
+	if b.generations.current(s.name) != s.generation {
+		return "", errSessionReplaced
+	}
+	return b.runner.CapturePane(s.name, lines)
 }
 
-func (b *Bridge) handleUpload(ctx context.Context, chatID int64, fileID, fileName, caption string) {
-	s, err := b.resolveSession(chatID, "")
+func (b *Bridge) watchVisible(s sessionRef) CaptureFunc {
+	return func() (string, error) { return b.capturePane(s, visiblePaneOnly) }
+}
+
+type uploadedFile struct {
+	fileID   string
+	fileName string
+	caption  string
+}
+
+func (b *Bridge) handleUpload(ctx context.Context, chatID int64, target string, f uploadedFile) {
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
-	file, err := b.tg.GetFile(ctx, fileID)
+	file, err := b.tg.GetFile(ctx, f.fileID)
 	if err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось получить файл: %v", err))
 		return
 	}
 
-	relPath := filepath.Join("telegram-inbox", sanitizeFileName(fileName))
+	relPath := filepath.Join("telegram-inbox", sanitizeFileName(f.fileName))
 	if err := b.tg.DownloadFile(ctx, file.FilePath, filepath.Join(s.dir, relPath)); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось скачать файл: %v", err))
 		return
 	}
 
-	b.forwardToSession(ctx, chatID, uploadPrompt(relPath, caption))
+	b.forwardToSession(ctx, chatID, target, uploadPrompt(relPath, f.caption))
 }
 
 func uploadPrompt(relPath, caption string) string {
@@ -396,8 +458,12 @@ func sanitizeFileName(name string) string {
 	return base
 }
 
+func deliveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
+}
+
 func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
-	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
+	sendCtx, cancel := deliveryContext(ctx)
 	defer cancel()
 
 	if len(text) > maxTotalInlineLen {
@@ -407,7 +473,7 @@ func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
 	for i, chunk := range SplitForTelegram(text, maxInlineReplyLen) {
 		opts := telegram.SendOptions{}
 		if i == 0 {
-			opts.ReplyTo = b.replyTo
+			opts.ReplyTo = replyToOf(ctx)
 		}
 		if err := b.tg.Send(sendCtx, chatID, chunk, opts); err != nil {
 			b.log.Error("send message failed", "err", err)
@@ -417,28 +483,21 @@ func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
 }
 
 func (b *Bridge) replyWithMenu(ctx context.Context, chatID int64, menu Menu) {
-	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
+	sendCtx, cancel := deliveryContext(ctx)
 	defer cancel()
 
-	var row []telegram.InlineButton
-	for _, option := range menu.Options {
-		row = append(row, telegram.InlineButton{
-			Text:         option.Key + ". " + option.Label,
-			CallbackData: option.Key,
-		})
+	opts := telegram.SendOptions{
+		ReplyTo:  replyToOf(ctx),
+		Keyboard: &telegram.InlineKeyboard{Rows: menu.keyboardRows()},
+	}
+	err := b.tg.Send(sendCtx, chatID, menu.heading(), opts)
+	if err == nil {
+		return
 	}
 
-	text := menu.Question
-	if text == "" {
-		text = "сессия ждёт выбора"
-	}
-	opts := telegram.SendOptions{
-		ReplyTo:  b.replyTo,
-		Keyboard: &telegram.InlineKeyboard{Rows: [][]telegram.InlineButton{row}},
-	}
-	if err := b.tg.Send(sendCtx, chatID, text, opts); err != nil {
-		b.log.Error("send menu failed", "err", err)
-	}
+	b.log.Warn("sending the menu as buttons failed, falling back to a numbered text menu",
+		"err", err, "options", len(menu.Options))
+	b.reply(ctx, chatID, menu.asPlainText())
 }
 
 func (b *Bridge) replyAsDocument(ctx context.Context, chatID int64, text string) {

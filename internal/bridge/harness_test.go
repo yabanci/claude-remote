@@ -120,21 +120,52 @@ func (f *fakeRunner) pane(session string) string {
 }
 
 type fakeTelegram struct {
-	mu         sync.Mutex
-	sent       []string
-	docs       []string
-	keyboardsL [][]string
-	callbacks  []string
-	typing     int
-	replyTos   []int64
-	updates    []telegram.Update
-	nextCall   int
+	mu             sync.Mutex
+	sent           []string
+	docs           []string
+	keyboardsL     [][]string
+	keyboardRows   [][][]string
+	callbacks      []string
+	typing         int
+	replyTos       []int64
+	updates        []telegram.Update
+	nextCall       int
+	rejectMarkup   bool
+	rejectGetFile  bool
+	rejectDownload bool
 }
 
 func (f *fakeTelegram) keyboards() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.keyboardsL...)
+}
+
+func (f *fakeTelegram) rowsOfLastKeyboard() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.keyboardRows) == 0 {
+		return nil
+	}
+	return f.keyboardRows[len(f.keyboardRows)-1]
+}
+
+func (f *fakeTelegram) failEveryKeyboardSend() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectMarkup = true
+}
+
+func (f *fakeTelegram) failGetFile() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectGetFile = true
+}
+
+func (f *fakeTelegram) failDownload() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rejectDownload = true
 }
 
 func (f *fakeTelegram) answeredCallbacks() []string {
@@ -176,6 +207,13 @@ func (f *fakeTelegram) replyCount() int {
 	return len(f.sent) + len(f.docs)
 }
 
+func (f *fakeTelegram) enqueue(update telegram.Update) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	update.UpdateID = int64(len(f.updates) + 1)
+	f.updates = append(f.updates, update)
+}
+
 func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
 	switch {
@@ -184,14 +222,28 @@ func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Reque
 		var result []telegram.Update
 		if f.nextCall < len(f.updates) {
 			result = []telegram.Update{f.updates[f.nextCall]}
+			f.nextCall++
 		}
-		f.nextCall++
 		f.mu.Unlock()
 		data, _ := json.Marshal(result)
 		_, _ = fmt.Fprintf(w, `{"ok":true,"result":%s}`, data)
 	case strings.Contains(r.URL.Path, "getFile"):
+		f.mu.Lock()
+		reject := f.rejectGetFile
+		f.mu.Unlock()
+		if reject {
+			_, _ = fmt.Fprint(w, `{"ok":false,"error_code":400,"description":"file not found"}`)
+			return
+		}
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":{"file_id":"fid","file_path":"documents/upload.txt"}}`)
 	case strings.Contains(r.URL.Path, "/file/bot"):
+		f.mu.Lock()
+		reject := f.rejectDownload
+		f.mu.Unlock()
+		if reject {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		_, _ = fmt.Fprint(w, "uploaded file body")
 	case strings.Contains(r.URL.Path, "sendChatAction"):
 		f.mu.Lock()
@@ -206,18 +258,30 @@ func (f *fakeTelegram) handle(t *testing.T, w http.ResponseWriter, r *http.Reque
 		_, _ = fmt.Fprint(w, `{"ok":true,"result":true}`)
 	case strings.Contains(r.URL.Path, "sendMessage"):
 		require.NoError(t, r.ParseForm())
+		markup := r.FormValue("reply_markup")
 		f.mu.Lock()
+		if markup != "" && f.rejectMarkup {
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"ok":false,"description":"Bad Request: BUTTON_DATA_INVALID"}`)
+			return
+		}
 		f.sent = append(f.sent, r.FormValue("text"))
-		if raw := r.FormValue("reply_markup"); raw != "" {
+		if markup != "" {
 			var kb telegram.InlineKeyboard
-			require.NoError(t, json.Unmarshal([]byte(raw), &kb))
+			require.NoError(t, json.Unmarshal([]byte(markup), &kb))
 			var labels []string
+			var rows [][]string
 			for _, row := range kb.Rows {
+				var rowLabels []string
 				for _, btn := range row {
 					labels = append(labels, btn.Text)
+					rowLabels = append(rowLabels, btn.Text)
 				}
+				rows = append(rows, rowLabels)
 			}
 			f.keyboardsL = append(f.keyboardsL, labels)
+			f.keyboardRows = append(f.keyboardRows, rows)
 		}
 		if to := r.FormValue("reply_to_message_id"); to != "" {
 			var id int64
@@ -262,6 +326,11 @@ func testConfigFor(t *testing.T) config.Config {
 	return cfg
 }
 
+func newTestTelegramClient(baseURL string) *telegram.Client {
+	return telegram.NewClient("test-token", telegram.WithBaseURL(baseURL),
+		telegram.WithMaxRetries(0))
+}
+
 func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner) *harness {
 	t.Helper()
 
@@ -273,13 +342,12 @@ func newHarnessWithRunner(t *testing.T, cfg config.Config, runner bridge.Runner)
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,
 		cfg:        cfg,
 		configPath: configPath,
-		runner:     newFakeRunner(),
 		tg:         ft,
 		bridge:     bridge.New(cfg, configPath, tg, runner, logger, t.TempDir()),
 	}
@@ -310,7 +378,7 @@ func newHarness(t *testing.T, tweaks ...func(*config.Config)) *harness {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	runner := newFakeRunner()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 
 	return &harness{
 		t:          t,
@@ -332,25 +400,28 @@ func (h *harness) startSession(name string) *harness {
 	return h
 }
 
-func (h *harness) send(text string) {
-	h.t.Helper()
-	h.deliver(telegram.Message{
+func (h *harness) userMessage(text string) telegram.Message {
+	return telegram.Message{
 		Chat: telegram.Chat{ID: 1},
 		From: &telegram.User{ID: testUserID},
 		Text: text,
-	})
+	}
+}
+
+func (h *harness) send(text string) {
+	h.t.Helper()
+	h.deliver(h.userMessage(text))
 }
 
 func (h *harness) deliver(msg telegram.Message) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &msg}}
+	h.tg.enqueue(telegram.Update{Message: &msg})
 	h.runUntilReply()
 }
 
 func (h *harness) deliverCallback(data string) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{
-		UpdateID: 1,
+	h.tg.enqueue(telegram.Update{
 		CallbackQuery: &telegram.CallbackQuery{
 			ID:   "cb-1",
 			From: &telegram.User{ID: testUserID},
@@ -360,7 +431,7 @@ func (h *harness) deliverCallback(data string) {
 				Chat:      telegram.Chat{ID: 1},
 			},
 		},
-	}}
+	})
 	h.runUntilReplies(1)
 }
 
@@ -371,6 +442,7 @@ func (h *harness) runUntilReply() {
 
 func (h *harness) runUntilReplies(want int) {
 	h.t.Helper()
+	before := h.tg.replyCount()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -378,18 +450,15 @@ func (h *harness) runUntilReplies(want int) {
 		_ = h.bridge.Run(ctx)
 	}()
 
-	waitUntil(h.t, func() bool { return h.tg.replyCount() >= want })
+	waitUntil(h.t, func() bool { return h.tg.replyCount() >= before+want })
 	cancel()
 	h.awaitStop(done)
 }
 
 func (h *harness) sendAwaiting(text string, wantReplies int) {
 	h.t.Helper()
-	h.tg.updates = []telegram.Update{{UpdateID: 1, Message: &telegram.Message{
-		Chat: telegram.Chat{ID: 1},
-		From: &telegram.User{ID: testUserID},
-		Text: text,
-	}}}
+	msg := h.userMessage(text)
+	h.tg.enqueue(telegram.Update{Message: &msg})
 	h.runUntilReplies(wantReplies)
 }
 
@@ -410,7 +479,7 @@ func (h *harness) awaitStop(done <-chan struct{}) {
 	h.t.Helper()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testAwaitTimeout):
 		h.t.Fatal("bridge did not stop after cancel")
 	}
 }
@@ -424,11 +493,12 @@ func (h *harness) lastMessage() string {
 
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
-	for i := 0; i < 200; i++ {
+	deadline := time.Now().Add(testAwaitTimeout)
+	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(testPollInterval)
 	}
 	t.Fatal("condition not met in time")
 }

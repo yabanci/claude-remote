@@ -4,6 +4,8 @@ import "strings"
 
 const boxDrawingRunes = "─━│┃╭╮╰╯┌┐└┘├┤┬┴┼═║"
 
+const claudeCodeStatuslineTail = "/rc"
+
 func CleanReply(text string) string {
 	var kept []string
 	for _, line := range strings.Split(text, "\n") {
@@ -26,7 +28,7 @@ func isChrome(line string) bool {
 	if strings.HasPrefix(trimmed, "❯") {
 		return true
 	}
-	if trimmed == "/rc" {
+	if trimmed == claudeCodeStatuslineTail {
 		return true
 	}
 	if strings.Contains(trimmed, "auto mode on (shift+tab") {

@@ -1,49 +1,93 @@
 package bridge
 
 import (
+	"context"
 	"strings"
 	"time"
 
 	"github.com/yabanci/claude-remote/internal/config"
 )
 
-func DiffTail(before, after string) string {
-	beforeLines := strings.Split(before, "\n")
-	afterLines := strings.Split(after, "\n")
+const (
+	scrollbackEvictedReply = "ответ недоступен — экран сессии прокрутился дальше истории, посмотри /cr_peek"
+	minCarriedOverLines    = 4
+)
 
-	common := 0
-	for common < len(beforeLines) && common < len(afterLines) && beforeLines[common] == afterLines[common] {
-		common++
+func DiffTail(before, after string) string {
+	beforeLines := trimTrailingBlankLines(strings.Split(before, "\n"))
+	afterLines := trimTrailingBlankLines(strings.Split(after, "\n"))
+
+	carried := carriedOverLines(beforeLines, afterLines)
+	if scrollbackLikelyEvicted(carried, beforeLines, afterLines) {
+		return scrollbackEvictedReply
 	}
-	return strings.TrimSpace(strings.Join(afterLines[common:], "\n"))
+	return strings.TrimSpace(strings.Join(afterLines[carried:], "\n"))
+}
+
+func carriedOverLines(beforeLines, afterLines []string) int {
+	for evicted := 0; evicted < len(beforeLines); evicted++ {
+		if startsWith(afterLines, beforeLines[evicted:]) {
+			return len(beforeLines) - evicted
+		}
+	}
+	return 0
+}
+
+func trimTrailingBlankLines(lines []string) []string {
+	end := len(lines)
+	for end > 0 && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	return lines[:end]
+}
+
+func startsWith(lines, prefix []string) bool {
+	if len(prefix) > len(lines) {
+		return false
+	}
+	for i := range prefix {
+		if strings.TrimRight(lines[i], " \t") != strings.TrimRight(prefix[i], " \t") {
+			return false
+		}
+	}
+	return true
+}
+
+func scrollbackLikelyEvicted(carried int, beforeLines, afterLines []string) bool {
+	return carried < minCarriedOverLines &&
+		len(beforeLines) >= captureHistoryLines &&
+		len(afterLines) >= captureHistoryLines
 }
 
 type CaptureFunc func() (string, error)
 
 type InterimFunc func(elapsed time.Duration)
 
-func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim InterimFunc) (string, error) {
+func WaitForSettle(ctx context.Context, capture CaptureFunc, cfg config.SettleConfig, onInterim InterimFunc) (string, error) {
 	pollInterval := cfg.PollInterval()
 	hardCap := cfg.HardCapDuration()
 	interimEvery := cfg.InterimNoticeDuration()
 
+	startedAt := time.Now()
 	last, err := capture()
 	if err != nil {
 		return "", err
 	}
 
-	var elapsed time.Duration
+	elapsed := time.Since(startedAt)
 	var lastNotice time.Duration
 	stableRounds := 0
 
 	for stableRounds < cfg.StableRounds && elapsed < hardCap {
-		time.Sleep(pollInterval)
-		elapsed += pollInterval
+		if err := sleepUntil(ctx, pollInterval); err != nil {
+			return last, err
+		}
 
 		current, err := capture()
 		if err != nil {
 			return "", err
 		}
+		elapsed = time.Since(startedAt)
 
 		if current == last {
 			stableRounds++
@@ -59,4 +103,16 @@ func WaitForSettle(capture CaptureFunc, cfg config.SettleConfig, onInterim Inter
 	}
 
 	return last, nil
+}
+
+func sleepUntil(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

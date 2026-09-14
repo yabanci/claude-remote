@@ -88,3 +88,26 @@ func TestTailFallsBackWhenOnlyAQuoteIsPresent(t *testing.T) {
 
 	assert.False(t, ok, "without an input line there is no anchor, so the caller must diff instead")
 }
+
+func TestTailAfterPromptRecoversAnEchoWrappedAcrossTwoLinesWithoutAMarker(t *testing.T) {
+	pane := "hostname$ echo\nfirst-turn-marker\nfirst-turn-marker\n" +
+		"hostname$ echo\nsecond-turn-marker\nsecond-turn-marker\nhostname$"
+
+	tail, ok := bridge.TailAfterPrompt(pane, "echo second-turn-marker")
+
+	require.True(t, ok, "a plain shell prompt long enough to force a wrap can split the "+
+		"echoed command across two pane lines with no >/❯ marker at all -- the anchor must "+
+		"still be found by crossing that line break, not just by an unmarked line prefix")
+	assert.Contains(t, tail, "second-turn-marker")
+	assert.NotContains(t, tail, "first-turn-marker")
+}
+
+func TestTailDoesNotTreatAWholeLineMatchAsAWrappedEcho(t *testing.T) {
+	pane := "⏺ Ты спросил \"где лежит конфиг только что\" — вот ответ, где лежит конфиг только что."
+
+	_, ok := bridge.TailAfterPrompt(pane, "где лежит конфиг только что")
+
+	assert.False(t, ok, "an anchor that matches entirely within one line, even the last "+
+		"occurrence of it, must not be treated as a wrapped echo -- only a match that "+
+		"genuinely crosses a real line break is a wrap, everything else is prose")
+}

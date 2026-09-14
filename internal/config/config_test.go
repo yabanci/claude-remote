@@ -92,6 +92,62 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, cfg.Settle, loaded.Settle)
 }
 
+func TestSaveWritesAtomicallyNoTempFileLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	cfg := config.Default()
+	cfg.BotToken = "abc123"
+	require.NoError(t, config.Save(path, cfg))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "only config.yaml should remain, no leftover temp file")
+	assert.Equal(t, "config.yaml", entries[0].Name())
+
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestSaveReplacesExistingConfigWholesale(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("a very long stale config body that must not survive a save"), 0o600))
+
+	cfg := config.Default()
+	cfg.BotToken = "fresh-token"
+	require.NoError(t, config.Save(path, cfg))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "stale config body")
+}
+
+func TestSaveSaysWhichStepFailedWhenTheConfigDirCannotBeCreated(t *testing.T) {
+	occupied := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(occupied, []byte("x"), 0o600))
+
+	err := config.Save(filepath.Join(occupied, "config.yaml"), config.Default())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create config dir",
+		"the caller has to be able to tell a bad directory from a bad write")
+}
+
+func TestSaveSaysWhichStepFailedWhenTheConfigCannotBeWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.Mkdir(path, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(path, "keepme"), []byte("x"), 0o600))
+
+	err := config.Save(path, config.Default())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write config",
+		"the caller has to be able to tell a bad write from a bad directory")
+	assert.Contains(t, err.Error(), path, "and which file it was")
+}
+
 func TestApplySettleDefaultsOnPartialConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")

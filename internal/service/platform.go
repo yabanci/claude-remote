@@ -1,9 +1,13 @@
 package service
 
 import (
+	"bytes"
+	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -51,7 +55,16 @@ func (launchd) logDir() (string, error) {
 }
 
 func (launchd) render(execPath, logDir, searchPath string) string {
-	return fmt.Sprintf(launchdTemplate, launchdLabel, execPath, searchPath, logDir, logDir)
+	return fmt.Sprintf(launchdTemplate, launchdLabel,
+		xmlEscape(execPath), xmlEscape(searchPath), xmlEscape(logDir), xmlEscape(logDir))
+}
+
+func xmlEscape(s string) string {
+	var buf bytes.Buffer
+	if err := xml.EscapeText(&buf, []byte(s)); err != nil {
+		return s
+	}
+	return buf.String()
 }
 
 func (launchd) enable(runner CommandRunner, unitPath string) error {
@@ -62,7 +75,9 @@ func (launchd) enable(runner CommandRunner, unitPath string) error {
 }
 
 func (launchd) disable(runner CommandRunner, unitPath string) error {
-	_ = runner.Run("launchctl", "unload", unitPath)
+	if err := runner.Run("launchctl", "unload", unitPath); err != nil {
+		return fmt.Errorf("launchctl unload: %w", err)
+	}
 	return nil
 }
 
@@ -71,7 +86,30 @@ func (launchd) status(runner CommandRunner) (string, error) {
 	if err != nil {
 		return statusNotInstalled, nil
 	}
-	return string(out), nil
+	text := string(out)
+	if strings.Contains(text, `"PID"`) {
+		return text, nil
+	}
+	if launchdLastExitStatusNonZero(text) {
+		return statusFailed, nil
+	}
+	return statusStopped, nil
+}
+
+func launchdLastExitStatusNonZero(text string) bool {
+	_, afterKey, found := strings.Cut(text, `"LastExitStatus"`)
+	if !found {
+		return false
+	}
+	_, afterEquals, found := strings.Cut(afterKey, "=")
+	if !found {
+		return false
+	}
+	if end := strings.IndexAny(afterEquals, ";\n"); end != -1 {
+		afterEquals = afterEquals[:end]
+	}
+	value := strings.TrimSpace(afterEquals)
+	return value != "" && value != "0"
 }
 
 type systemd struct{}
@@ -89,7 +127,17 @@ func (systemd) logDir() (string, error) {
 }
 
 func (systemd) render(execPath, _, searchPath string) string {
-	return fmt.Sprintf(systemdTemplate, searchPath, execPath)
+	return fmt.Sprintf(systemdTemplate, systemdEnv("PATH", searchPath), systemdArg(execPath))
+}
+
+var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`)
+
+func systemdArg(s string) string {
+	return `"` + systemdEscaper.Replace(s) + `"`
+}
+
+func systemdEnv(key, value string) string {
+	return `"` + key + "=" + systemdEscaper.Replace(value) + `"`
 }
 
 func (systemd) enable(runner CommandRunner, _ string) error {
@@ -103,16 +151,32 @@ func (systemd) enable(runner CommandRunner, _ string) error {
 }
 
 func (systemd) disable(runner CommandRunner, _ string) error {
-	_ = runner.Run("systemctl", "--user", "disable", "--now", systemdUnit)
-	return runner.Run("systemctl", "--user", "daemon-reload")
+	var errs []error
+	if err := runner.Run("systemctl", "--user", "disable", "--now", systemdUnit); err != nil {
+		errs = append(errs, fmt.Errorf("systemctl disable --now: %w", err))
+	}
+	if err := runner.Run("systemctl", "--user", "daemon-reload"); err != nil {
+		errs = append(errs, fmt.Errorf("systemctl daemon-reload: %w", err))
+	}
+	return errors.Join(errs...)
 }
 
 func (systemd) status(runner CommandRunner) (string, error) {
 	out, err := runner.CombinedOutput("systemctl", "--user", "is-active", systemdUnit)
-	if err != nil {
+	state := strings.TrimSpace(string(out))
+	if err == nil {
+		return state, nil
+	}
+	switch state {
+	case "failed":
+		return statusFailed, nil
+	case "inactive":
+		return statusStopped, nil
+	case "activating", "deactivating", "reloading":
+		return state, nil
+	default:
 		return statusNotInstalled, nil
 	}
-	return string(out), nil
 }
 
 const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
@@ -147,7 +211,7 @@ const systemdTemplate = `[Unit]
 Description=claude-remote Telegram bridge
 
 [Service]
-Environment="PATH=%s"
+Environment=%s
 ExecStart=%s run
 Restart=on-failure
 RestartSec=5

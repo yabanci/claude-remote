@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/yabanci/claude-remote/internal/bridge"
+	"github.com/yabanci/claude-remote/internal/config"
 	"github.com/yabanci/claude-remote/internal/telegram"
 )
 
@@ -27,6 +28,7 @@ type failingRunner struct {
 	killErr      error
 	startErr     error
 	interruptErr error
+	beforeStart  func()
 }
 
 func (f *failingRunner) Kill(session string) error {
@@ -37,6 +39,9 @@ func (f *failingRunner) Kill(session string) error {
 }
 
 func (f *failingRunner) Start(session, dir, command string) error {
+	if f.beforeStart != nil {
+		f.beforeStart()
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -94,6 +99,52 @@ func TestCrKillReportsFailure(t *testing.T) {
 	assert.Contains(t, h.lastMessage(), "не удалось остановить")
 }
 
+func TestCrNewRollsBackConfigEntryWhenStartFails(t *testing.T) {
+	cfg := testConfigFor(t)
+	runner := &failingRunner{fakeRunner: newFakeRunner(), startErr: errors.New("no such directory")}
+	h := newHarnessWithRunner(t, cfg, runner)
+	projectDir := t.TempDir()
+
+	h.send("/cr_new work " + projectDir)
+
+	assert.Contains(t, h.lastMessage(), "не запустилась")
+	assert.False(t, runner.Exists("work"))
+
+	saved, err := config.Load(h.configPath)
+	require.NoError(t, err)
+	_, exists := saved.Sessions["work"]
+	assert.False(t, exists, "a session whose Start failed must not stay in the saved config")
+
+	h.send("/cr_status")
+	assert.NotContains(t, h.lastMessage(), "work", "a rolled-back session must not still be the active one")
+}
+
+func TestCrNewAdmitsWhenItsOwnRollbackCannotBeSaved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory, so the rollback's save would not fail")
+	}
+	cfg := testConfigFor(t)
+	runner := &failingRunner{fakeRunner: newFakeRunner(), startErr: errors.New("no such directory")}
+	h := newHarnessWithRunner(t, cfg, runner)
+
+	configDir := filepath.Dir(h.configPath)
+	runner.beforeStart = func() { require.NoError(t, os.Chmod(configDir, 0o500)) }
+	t.Cleanup(func() { _ = os.Chmod(configDir, 0o700) })
+
+	h.send("/cr_new work " + t.TempDir())
+
+	assert.Contains(t, h.lastMessage(), "откатить конфиг не удалось")
+	assert.Contains(t, h.lastMessage(), "work")
+	assert.NotContains(t, h.lastMessage(), "откатываю конфиг",
+		"a rollback that could not be saved must not be reported as a clean one")
+
+	require.NoError(t, os.Chmod(configDir, 0o700))
+	saved, err := config.Load(h.configPath)
+	require.NoError(t, err)
+	_, exists := saved.Sessions["work"]
+	assert.True(t, exists, "the dangling entry the user was warned about must really be on disk")
+}
+
 type offsetAwareTelegram struct {
 	mu             sync.Mutex
 	deliveries     int
@@ -146,7 +197,7 @@ func TestARestartedBridgeDoesNotReplayHandledMessages(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 
 	runOnce := func() {
-		tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+		tg := newTestTelegramClient(server.URL)
 		b := bridge.New(cfg, configPath, tg, runner, logger, stateDir)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan struct{})
@@ -197,7 +248,7 @@ func TestAnUnwritableStateDirDoesNotStopTheBridgeAnswering(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	b := bridge.New(cfg, filepath.Join(t.TempDir(), "config.yaml"), tg, runner, logger, blocked)
 

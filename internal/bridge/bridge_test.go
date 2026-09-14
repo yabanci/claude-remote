@@ -51,6 +51,13 @@ func TestCrUseSwitchesActiveSession(t *testing.T) {
 	h.send("/cr_use work")
 
 	assert.Contains(t, h.lastMessage(), "work")
+
+	h.send("hello work")
+
+	assert.Contains(t, h.runner.pane("work"), "hello work",
+		"the message should have reached the newly-active session")
+	assert.NotContains(t, h.runner.pane("main"), "hello work",
+		"the default session must not receive traffic meant for the active one")
 }
 
 func TestCrUseUnknownSessionReportsError(t *testing.T) {

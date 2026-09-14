@@ -2,9 +2,12 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,27 +15,43 @@ import (
 	"github.com/yabanci/claude-remote/internal/telegram"
 )
 
+var validSessionName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+const (
+	sessionNotRunningNotice = "сессия %q не запущена"
+	stopFailedNotice        = "не удалось остановить: %v"
+	startFailedRolledBack   = "сессия не запустилась, откатываю конфиг: %v"
+	startFailedRollbackKept = "сессия не запустилась (%v), и откатить конфиг не удалось (%v): запись %q осталась в %s — убери её вручную, иначе она вернётся после перезапуска"
+	pathEscapesSessionDir   = "путь %q выходит за пределы рабочей директории сессии"
+	sessionDirUnresolvable  = "не удалось разрешить рабочую директорию сессии %q: %v"
+	pathUncheckable         = "не удалось проверить путь %q: %v"
+)
+
 func commandMenu() []telegram.BotCommand {
 	return []telegram.BotCommand{
 		{Command: "cr_status", Description: "статус текущей и всех сессий"},
 		{Command: "cr_sessions", Description: "список сессий"},
 		{Command: "cr_use", Description: "переключиться на сессию: /cr_use <имя>"},
-		{Command: "cr_new", Description: "создать сессию: /cr_new <имя> <путь>"},
+		{Command: "cr_new", Description: "создать сессию: /cr_new <имя> <путь>, имя — только буквы/цифры/_/-"},
 		{Command: "cr_kill", Description: "остановить сессию: /cr_kill [имя]"},
 		{Command: "cr_restart", Description: "перезапустить сессию: /cr_restart [имя]"},
 		{Command: "cr_interrupt", Description: "Ctrl-C в текущей сессии"},
 		{Command: "cr_peek", Description: "показать экран сессии, ничего в неё не отправляя"},
-		{Command: "cr_send", Description: "прислать файл из рабочей директории: /cr_send <путь>"},
+		{Command: "cr_send", Description: "прислать файл из рабочей директории сессии, за её пределы — запрет: /cr_send <путь>"},
 		{Command: "cr_help", Description: "список команд"},
 	}
 }
 
-func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
-	fields := strings.SplitN(strings.TrimSpace(text), " ", 2)
-	cmd := fields[0]
-	arg := ""
-	if len(fields) > 1 {
-		arg = strings.TrimSpace(fields[1])
+func stripBotSuffix(cmd string) string {
+	base, _, _ := strings.Cut(cmd, "@")
+	return base
+}
+
+func (b *Bridge) handleCommand(ctx context.Context, chatID int64, target, text string) {
+	cmd, arg, ok := parseCommand(text)
+	if !ok {
+		b.reply(ctx, chatID, fmt.Sprintf("не похоже на команду бриджа: %s", text))
+		return
 	}
 
 	switch cmd {
@@ -47,13 +66,13 @@ func (b *Bridge) handleCommand(ctx context.Context, chatID int64, text string) {
 	case "/cr_kill":
 		b.cmdKill(ctx, chatID, arg)
 	case "/cr_restart":
-		b.cmdRestart(ctx, chatID, arg)
+		b.cmdRestart(ctx, chatID, target)
 	case "/cr_interrupt":
 		b.cmdInterrupt(ctx, chatID)
 	case "/cr_peek":
 		b.cmdPeek(ctx, chatID)
 	case "/cr_send":
-		b.cmdSend(ctx, chatID, arg)
+		b.cmdSend(ctx, chatID, target, arg)
 	case "/cr_help":
 		b.cmdHelp(ctx, chatID)
 	default:
@@ -65,7 +84,7 @@ func (b *Bridge) cmdStatus(ctx context.Context, chatID int64) {
 	current := b.activeSessionName(chatID)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "текущая сессия: %s\n\n", current)
-	for _, name := range sortedSessionNames(b.cfg.Sessions) {
+	for _, name := range sortedSessionNames(b.sessionsSnapshot()) {
 		state := "остановлена"
 		if b.runner.Exists(name) {
 			state = "работает"
@@ -82,8 +101,9 @@ func (b *Bridge) cmdStatus(ctx context.Context, chatID int64) {
 func (b *Bridge) cmdSessions(ctx context.Context, chatID int64) {
 	current := b.activeSessionName(chatID)
 	var sb strings.Builder
-	for _, name := range sortedSessionNames(b.cfg.Sessions) {
-		sc := b.cfg.Sessions[name]
+	sessions := b.sessionsSnapshot()
+	for _, name := range sortedSessionNames(sessions) {
+		sc := sessions[name]
 		marker := ""
 		if name == current {
 			marker = " [active]"
@@ -98,11 +118,10 @@ func (b *Bridge) cmdUse(ctx context.Context, chatID int64, name string) {
 		b.reply(ctx, chatID, "укажи имя: /cr_use <имя>")
 		return
 	}
-	if _, ok := b.cfg.Sessions[name]; !ok {
+	if !b.useSession(chatID, name) {
 		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не найдена, см. /cr_sessions", name))
 		return
 	}
-	b.activeSession[chatID] = name
 	b.reply(ctx, chatID, fmt.Sprintf("активная сессия: %s", name))
 }
 
@@ -114,8 +133,8 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 	}
 	name, rawDir := parts[0], strings.TrimSpace(parts[1])
 
-	if _, exists := b.cfg.Sessions[name]; exists {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q уже существует, используй /cr_use", name))
+	if !validSessionName.MatchString(name) {
+		b.reply(ctx, chatID, fmt.Sprintf("недопустимое имя сессии %q: разрешены только буквы, цифры, `_` и `-`", name))
 		return
 	}
 
@@ -129,17 +148,20 @@ func (b *Bridge) cmdNew(ctx context.Context, chatID int64, arg string) {
 		return
 	}
 
-	b.cfg.Sessions[name] = config.SessionConfig{Dir: rawDir, Command: "claude"}
-	if err := config.Save(b.configPath, b.cfg); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось сохранить конфиг: %v", err))
+	if err := b.addSession(chatID, name, rawDir); err != nil {
+		b.reply(ctx, chatID, err.Error())
 		return
 	}
-	b.activeSession[chatID] = name
 
-	if err := b.runner.Start(name, dir, "claude"); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия создана в конфиге, но не запустилась: %v", err))
+	if err := b.runner.Start(name, dir, defaultSessionCommand); err != nil {
+		if rollbackErr := b.rollbackNewSession(chatID, name); rollbackErr != nil {
+			b.reply(ctx, chatID, fmt.Sprintf(startFailedRollbackKept, err, rollbackErr, name, b.configPath))
+			return
+		}
+		b.reply(ctx, chatID, fmt.Sprintf(startFailedRolledBack, err))
 		return
 	}
+	b.generations.bump(name)
 	b.reply(ctx, chatID, fmt.Sprintf("создана и запущена: %s (%s)", name, dir))
 }
 
@@ -151,11 +173,11 @@ func (b *Bridge) cmdKill(ctx context.Context, chatID int64, name string) {
 	}
 	name = s.name
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Kill(name); err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+		b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 		return
 	}
 	b.reply(ctx, chatID, fmt.Sprintf("остановлена: %s", name))
@@ -169,7 +191,7 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 	}
 	if b.runner.Exists(s.name) {
 		if err := b.runner.Kill(s.name); err != nil {
-			b.reply(ctx, chatID, fmt.Sprintf("не удалось остановить: %v", err))
+			b.reply(ctx, chatID, fmt.Sprintf(stopFailedNotice, err))
 			return
 		}
 	}
@@ -177,13 +199,14 @@ func (b *Bridge) cmdRestart(ctx context.Context, chatID int64, name string) {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось запустить: %v", err))
 		return
 	}
+	b.generations.bump(s.name)
 	b.reply(ctx, chatID, fmt.Sprintf("перезапущена: %s", s.name))
 }
 
 func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 	if err := b.runner.Interrupt(name); err != nil {
@@ -196,13 +219,13 @@ func (b *Bridge) cmdInterrupt(ctx context.Context, chatID int64) {
 func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 	name := b.activeSessionName(chatID)
 	if !b.runner.Exists(name) {
-		b.reply(ctx, chatID, fmt.Sprintf("сессия %q не запущена", name))
+		b.reply(ctx, chatID, fmt.Sprintf(sessionNotRunningNotice, name))
 		return
 	}
 
 	pane, err := b.runner.CapturePane(name, captureHistoryLines)
 	if err != nil {
-		b.reply(ctx, chatID, fmt.Sprintf("не удалось прочитать экран сессии: %v", err))
+		b.reportCaptureFailure(ctx, chatID, name, err)
 		return
 	}
 
@@ -213,28 +236,66 @@ func (b *Bridge) cmdPeek(ctx context.Context, chatID int64) {
 	b.reply(ctx, chatID, shown)
 }
 
-func (b *Bridge) cmdSend(ctx context.Context, chatID int64, arg string) {
+func (b *Bridge) cmdSend(ctx context.Context, chatID int64, target, arg string) {
 	if arg == "" {
 		b.reply(ctx, chatID, "формат: /cr_send <путь>")
 		return
 	}
-	s, err := b.resolveSession(chatID, "")
+	s, err := b.resolveSession(chatID, target)
 	if err != nil {
 		b.reply(ctx, chatID, err.Error())
 		return
 	}
 
-	path := arg
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(s.dir, path)
+	path, err := resolveSendPath(s.dir, arg)
+	if err != nil {
+		b.reply(ctx, chatID, err.Error())
+		return
 	}
 	if _, err := os.Stat(path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("файл не найден: %s", path))
 		return
 	}
-	if err := b.tg.SendDocument(ctx, chatID, path); err != nil {
+	sendCtx, cancel := deliveryContext(ctx)
+	defer cancel()
+	if err := b.tg.SendDocument(sendCtx, chatID, path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить файл: %v", err))
 	}
+}
+
+func resolveSendPath(sessionDir, arg string) (string, error) {
+	base := filepath.Clean(sessionDir)
+	target := filepath.Clean(arg)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(base, target)
+	}
+	if !isInside(base, target) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
+	}
+
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return "", fmt.Errorf(sessionDirUnresolvable, sessionDir, err)
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return target, nil
+		}
+		return "", fmt.Errorf(pathUncheckable, arg, err)
+	}
+	if !isInside(realBase, realTarget) {
+		return "", fmt.Errorf(pathEscapesSessionDir, arg)
+	}
+	return realTarget, nil
+}
+
+func isInside(base, target string) bool {
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func (b *Bridge) cmdHelp(ctx context.Context, chatID int64) {

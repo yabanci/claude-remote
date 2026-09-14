@@ -65,3 +65,24 @@ func TestSessionDyingMidTurnIsReportedClearly(t *testing.T) {
 	assert.Contains(t, h.lastMessage(), "пропала")
 	assert.Contains(t, h.lastMessage(), "/cr_restart")
 }
+
+type vanishesOnCaptureRunner struct {
+	*fakeRunner
+}
+
+func (v *vanishesOnCaptureRunner) CapturePane(session string, historyLines int) (string, error) {
+	_ = v.Kill(session)
+	return "", errors.New("can't find pane")
+}
+
+func TestCrPeekReportsVanishedSessionLikeOtherCaptureFailures(t *testing.T) {
+	cfg := testConfigFor(t)
+	runner := &vanishesOnCaptureRunner{fakeRunner: newFakeRunner()}
+	require.NoError(t, runner.Start("main", cfg.Sessions["main"].Dir, "claude"))
+
+	h := newHarnessWithRunner(t, cfg, runner)
+	h.send("/cr_peek")
+
+	assert.Contains(t, h.lastMessage(), "пропала")
+	assert.Contains(t, h.lastMessage(), "/cr_restart")
+}

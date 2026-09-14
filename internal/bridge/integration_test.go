@@ -83,7 +83,7 @@ func TestEndToEndAgainstRealTmux(t *testing.T) {
 	cfg.Settle.ColdStartDelayMS = 500
 	cfg.Settle.PostSendDelayMS = 500
 
-	tg := telegram.NewClient("test-token", telegram.WithBaseURL(server.URL))
+	tg := newTestTelegramClient(server.URL)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	b := bridge.New(cfg, filepath.Join(t.TempDir(), "config.yaml"), tg, bridge.NewTmuxRunner(), logger, t.TempDir())
 
