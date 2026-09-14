@@ -9,7 +9,13 @@ func TailAfterPrompt(pane, sent string) (string, bool) {
 	if anchor == "" {
 		return "", false
 	}
+	if tail, ok := tailAfterMarkedEcho(pane, anchor); ok {
+		return tail, true
+	}
+	return tailAfterWrappedEcho(pane, anchor)
+}
 
+func tailAfterMarkedEcho(pane, anchor string) (string, bool) {
 	lines := strings.Split(pane, "\n")
 	found := -1
 	for i, line := range lines {
@@ -21,6 +27,18 @@ func TailAfterPrompt(pane, sent string) (string, bool) {
 		return "", false
 	}
 	return strings.Join(lines[found+1:], "\n"), true
+}
+
+func tailAfterWrappedEcho(pane, anchor string) (string, bool) {
+	flat := strings.ReplaceAll(pane, "\n", " ")
+	idx := strings.LastIndex(flat, anchor)
+	if idx < 0 {
+		return "", false
+	}
+	if !strings.Contains(pane[idx:idx+len(anchor)], "\n") {
+		return "", false
+	}
+	return pane[idx+len(anchor):], true
 }
 
 func isInputEcho(line string) bool {
