@@ -26,6 +26,8 @@ import (
 	"github.com/yabanci/claude-remote/internal/tmux"
 )
 
+const deterministicShellCommand = "exec env PS1='$ ' /bin/bash --norc --noprofile -i"
+
 type liveHarness struct {
 	t       *testing.T
 	session string
@@ -88,7 +90,7 @@ func newLiveHarness(t *testing.T) *liveHarness {
 	cfg.DefaultSession = lh.session
 	lh.sessionDir = t.TempDir()
 	cfg.Sessions = map[string]config.SessionConfig{
-		lh.session: {Dir: lh.sessionDir, Command: ""},
+		lh.session: {Dir: lh.sessionDir, Command: deterministicShellCommand},
 	}
 	cfg.Settle.PollIntervalMS = 400
 	cfg.Settle.StableRounds = 4

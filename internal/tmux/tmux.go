@@ -111,7 +111,7 @@ func Interrupt(session string) error {
 }
 
 func CapturePane(session string, historyLines int) (string, error) {
-	args := []string{"capture-pane", "-p", "-J", "-t", session}
+	args := []string{"capture-pane", "-p", "-t", session}
 	if historyLines > 0 {
 		args = append(args, "-S", "-"+strconv.Itoa(historyLines))
 	}
