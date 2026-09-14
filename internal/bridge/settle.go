@@ -46,7 +46,7 @@ func startsWith(lines, prefix []string) bool {
 		return false
 	}
 	for i := range prefix {
-		if lines[i] != prefix[i] {
+		if strings.TrimRight(lines[i], " \t") != strings.TrimRight(prefix[i], " \t") {
 			return false
 		}
 	}

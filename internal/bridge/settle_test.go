@@ -98,6 +98,19 @@ func TestDiffTailIgnoresTrailingBlankPaneRowsThatDifferInCountBetweenCaptures(t 
 			"that includes however much blank padding each capture happened to carry")
 }
 
+func TestDiffTailToleratesTrailingWhitespaceDifferencesOnOtherwiseIdenticalLines(t *testing.T) {
+	before := "prompt$ echo one \none\nprompt$ "
+	after := "prompt$ echo one\none\nprompt$\necho two\ntwo\nprompt$"
+
+	got := bridge.DiffTail(before, after)
+
+	assert.Equal(t, "echo two\ntwo\nprompt$", got,
+		"tmux capture-pane -J preserves trailing spaces instead of trimming them to the "+
+			"terminal width, so the same logical line can come back with a different amount "+
+			"of trailing whitespace between two captures taken moments apart -- that must not "+
+			"break the alignment of otherwise-identical content")
+}
+
 func fullHistoryPane(linePrefix string, lines int) string {
 	return strings.Join(historyRows(linePrefix, lines), "\n")
 }
