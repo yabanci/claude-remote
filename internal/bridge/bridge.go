@@ -458,12 +458,12 @@ func sanitizeFileName(name string) string {
 	return base
 }
 
-func (b *Bridge) deliveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func deliveryContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), replyDeliveryTimeout)
 }
 
 func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
-	sendCtx, cancel := b.deliveryContext(ctx)
+	sendCtx, cancel := deliveryContext(ctx)
 	defer cancel()
 
 	if len(text) > maxTotalInlineLen {
@@ -483,7 +483,7 @@ func (b *Bridge) reply(ctx context.Context, chatID int64, text string) {
 }
 
 func (b *Bridge) replyWithMenu(ctx context.Context, chatID int64, menu Menu) {
-	sendCtx, cancel := b.deliveryContext(ctx)
+	sendCtx, cancel := deliveryContext(ctx)
 	defer cancel()
 
 	opts := telegram.SendOptions{

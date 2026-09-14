@@ -256,7 +256,7 @@ func (b *Bridge) cmdSend(ctx context.Context, chatID int64, target, arg string) 
 		b.reply(ctx, chatID, fmt.Sprintf("файл не найден: %s", path))
 		return
 	}
-	sendCtx, cancel := b.deliveryContext(ctx)
+	sendCtx, cancel := deliveryContext(ctx)
 	defer cancel()
 	if err := b.tg.SendDocument(sendCtx, chatID, path); err != nil {
 		b.reply(ctx, chatID, fmt.Sprintf("не удалось отправить файл: %v", err))

@@ -222,12 +222,16 @@ func (r *startStallingRunner) Start(session, dir, command string) error {
 	return r.fakeRunner.Start(session, dir, command)
 }
 
+func (r *startStallingRunner) seedAlreadyRunning(session, dir string) error {
+	return r.fakeRunner.Start(session, dir, "claude")
+}
+
 func TestCrNewHoldsTheNewSessionsOwnLockWhileStartingIt(t *testing.T) {
 	const chatID int64 = 1
 	cfg := testConfigFor(t)
 	workDir := t.TempDir()
 	runner := newStartStallingRunner("work")
-	require.NoError(t, runner.fakeRunner.Start("work", workDir, "claude"))
+	require.NoError(t, runner.seedAlreadyRunning("work", workDir))
 
 	h := newHarnessWithRunner(t, cfg, runner)
 	h.tg.updates = []telegram.Update{textUpdateFromChat(1, chatID, "/cr_new work "+workDir)}
@@ -246,10 +250,7 @@ func TestCrNewHoldsTheNewSessionsOwnLockWhileStartingIt(t *testing.T) {
 			"session, not just avoid the caller's unrelated active session")
 
 	close(runner.release)
-	waitUntil(t, func() bool {
-		p, _ := runner.CapturePane("work", 0)
-		return strings.Contains(p, "second question")
-	})
+	waitUntil(t, func() bool { return runner.lastSentKeys() == "second question" })
 
 	cancel()
 	h.awaitStop(done)
