@@ -19,10 +19,17 @@ const (
 type platform interface {
 	unitPath() (string, error)
 	logDir() (string, error)
-	render(execPath, logDir, searchPath string) string
+	render(spec renderSpec) string
 	enable(runner CommandRunner, unitPath string) error
 	disable(runner CommandRunner, unitPath string) error
 	status(runner CommandRunner) (string, error)
+}
+
+type renderSpec struct {
+	execPath   string
+	configPath string
+	logDir     string
+	searchPath string
 }
 
 func platformFor(goos string) (platform, error) {
@@ -54,9 +61,10 @@ func (launchd) logDir() (string, error) {
 	return filepath.Join(home, "Library", "Logs", "claude-remote"), nil
 }
 
-func (launchd) render(execPath, logDir, searchPath string) string {
+func (launchd) render(spec renderSpec) string {
 	return fmt.Sprintf(launchdTemplate, launchdLabel,
-		xmlEscape(execPath), xmlEscape(searchPath), xmlEscape(logDir), xmlEscape(logDir))
+		xmlEscape(spec.execPath), xmlEscape(spec.configPath), xmlEscape(spec.searchPath),
+		xmlEscape(spec.logDir), xmlEscape(spec.logDir))
 }
 
 func xmlEscape(s string) string {
@@ -126,8 +134,9 @@ func (systemd) logDir() (string, error) {
 	return "", nil
 }
 
-func (systemd) render(execPath, _, searchPath string) string {
-	return fmt.Sprintf(systemdTemplate, systemdEnv("PATH", searchPath), systemdArg(execPath))
+func (systemd) render(spec renderSpec) string {
+	return fmt.Sprintf(systemdTemplate, systemdEnv("PATH", spec.searchPath),
+		systemdArg(spec.execPath), systemdArg(spec.configPath))
 }
 
 var systemdEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `%`, `%%`)
@@ -189,6 +198,8 @@ const launchdTemplate = `<?xml version="1.0" encoding="UTF-8"?>
   <array>
     <string>%s</string>
     <string>run</string>
+    <string>-config</string>
+    <string>%s</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -212,7 +223,7 @@ Description=claude-remote Telegram bridge
 
 [Service]
 Environment=%s
-ExecStart=%s run
+ExecStart=%s run -config %s
 Restart=on-failure
 RestartSec=5
 

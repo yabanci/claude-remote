@@ -137,8 +137,16 @@ func cmdService(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
+	configPath, err := resolveConfigPath(args)
+	if err != nil {
+		return err
+	}
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
 
-	return runService(args, service.NewManager(execPath), stdout)
+	return runService(args, service.NewManager(execPath, configPath), stdout)
 }
 
 func runService(args []string, mgr serviceManager, stdout io.Writer) error {
@@ -180,6 +188,11 @@ func verifyConfigBeforeInstall(args []string) error {
 	}
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("refusing to install a service that cannot start: config %s is invalid: %w", configPath, err)
+	}
+	if strings.TrimSpace(cfg.BotToken) == "" {
+		return fmt.Errorf("refusing to install: bot_token is empty in %s and only set via %s — "+
+			"a launchd/systemd service does not inherit this shell's environment, so it would fail to "+
+			"authenticate; put the token in the config file instead", configPath, config.EnvBotToken)
 	}
 	return nil
 }
