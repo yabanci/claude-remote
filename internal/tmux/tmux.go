@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -93,11 +94,14 @@ func SendKeys(session, text string) error {
 	return nil
 }
 
+var bufferSeq atomic.Uint64
+
 func pasteLiterally(session, text string) error {
-	if _, err := run(controlTimeout, text, "load-buffer", "-"); err != nil {
+	buffer := fmt.Sprintf("claude-remote-%s-%d", session, bufferSeq.Add(1))
+	if _, err := run(controlTimeout, text, "load-buffer", "-b", buffer, "-"); err != nil {
 		return fmt.Errorf("load input buffer for %s: %w", session, err)
 	}
-	if _, err := run(controlTimeout, "", "paste-buffer", "-d", "-p", "-t", session); err != nil {
+	if _, err := run(controlTimeout, "", "paste-buffer", "-d", "-p", "-b", buffer, "-t", session); err != nil {
 		return fmt.Errorf("paste input into %s: %w", session, err)
 	}
 	return nil
