@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,6 +82,47 @@ func TestSendKeysIsLiteralNotInterpreted(t *testing.T) {
 	require.NoError(t, tmux.SendKeys(session, "echo 'C-c ; literal $TEST'"))
 
 	waitForPane(t, session, "C-c ; literal $TEST")
+}
+
+func TestConcurrentSendKeysToDifferentSessionsDoNotSwapText(t *testing.T) {
+	requireTmux(t)
+	sessionA := uniqueSession(t)
+	sessionB := uniqueSession(t)
+	require.NoError(t, tmux.Start(sessionA, t.TempDir(), ""))
+	require.NoError(t, tmux.Start(sessionB, t.TempDir(), ""))
+
+	const rounds = 20
+	var wg sync.WaitGroup
+	for i := range rounds {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			_ = tmux.SendKeys(sessionA, fmt.Sprintf("echo marker-a-%d", i))
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			_ = tmux.SendKeys(sessionB, fmt.Sprintf("echo marker-b-%d", i))
+		}(i)
+	}
+	wg.Wait()
+
+	var paneA, paneB string
+	require.Eventually(t, func() bool {
+		var err error
+		paneA, err = tmux.CapturePane(sessionA, 500)
+		if err != nil {
+			return false
+		}
+		paneB, err = tmux.CapturePane(sessionB, 500)
+		if err != nil {
+			return false
+		}
+		return strings.Contains(paneA, fmt.Sprintf("marker-a-%d", rounds-1)) ||
+			strings.Contains(paneB, fmt.Sprintf("marker-b-%d", rounds-1))
+	}, 10*time.Second, 200*time.Millisecond, "commands never settled:\nA:\n%s\nB:\n%s", paneA, paneB)
+
+	assert.NotContains(t, paneA, "marker-b-", "session A's pane must never receive text meant for session B")
+	assert.NotContains(t, paneB, "marker-a-", "session B's pane must never receive text meant for session A")
 }
 
 func TestInterruptReachesThePane(t *testing.T) {
