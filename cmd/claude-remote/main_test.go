@@ -97,6 +97,36 @@ func TestCmdInitRejectsNonNumericUserID(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid user id")
 }
 
+func TestCmdInitRefusesOverwriteWithoutConfirmation(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	existing := config.Default()
+	existing.BotToken = "existing-token"
+	existing.AllowedChats = []int64{999}
+	require.NoError(t, config.Save(configPath, existing))
+	withStdin(t, "n\n")
+
+	require.NoError(t, cmdInit([]string{"-config", configPath}))
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "existing-token", cfg.BotToken, "declining the overwrite must leave the existing config untouched")
+	assert.Equal(t, []int64{999}, cfg.AllowedChats)
+}
+
+func TestCmdInitOverwritesExistingConfigWhenConfirmed(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	existing := config.Default()
+	existing.BotToken = "existing-token"
+	require.NoError(t, config.Save(configPath, existing))
+	withStdin(t, "y\n123456:new-token\n\n\n")
+
+	require.NoError(t, cmdInit([]string{"-config", configPath}))
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "123456:new-token", cfg.BotToken)
+}
+
 func TestCmdRunReportsMissingConfig(t *testing.T) {
 	err := cmdRun([]string{"-config", filepath.Join(t.TempDir(), "absent.yaml")})
 
@@ -157,6 +187,20 @@ func TestServiceInstallRefusesWithInvalidConfig(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid")
+}
+
+func TestServiceInstallRefusesWhenTokenOnlyInEnv(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = ""
+	require.NoError(t, config.Save(configPath, cfg))
+	t.Setenv(config.EnvBotToken, "123:abc")
+
+	err := verifyConfigBeforeInstall([]string{"-config", configPath})
+
+	require.Error(t, err,
+		"a launchd/systemd service does not inherit this shell's environment, so an env-only token would silently fail at runtime")
+	assert.Contains(t, err.Error(), config.EnvBotToken)
 }
 
 func TestRunWithNoArgsPrintsUsageAndFails(t *testing.T) {

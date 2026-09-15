@@ -57,27 +57,34 @@ func (r execRunner) CombinedOutput(name string, args ...string) ([]byte, error) 
 
 type Manager struct {
 	execPath   string
+	configPath string
 	searchPath string
 	runner     CommandRunner
 	platform   platform
 	platErr    error
 }
 
-func NewManager(execPath string) *Manager {
-	return NewManagerWithRunner(execPath, newExecRunner())
+type installTarget struct {
+	execPath   string
+	configPath string
 }
 
-func NewManagerWithRunner(execPath string, runner CommandRunner) *Manager {
+func NewManager(execPath, configPath string) *Manager {
+	return NewManagerWithRunner(execPath, configPath, newExecRunner())
+}
+
+func NewManagerWithRunner(execPath, configPath string, runner CommandRunner) *Manager {
 	p, err := platformFor(runtime.GOOS)
 	if err != nil {
-		return &Manager{execPath: execPath, runner: runner, platErr: err}
+		return &Manager{execPath: execPath, configPath: configPath, runner: runner, platErr: err}
 	}
-	return newManagerForPlatform(execPath, runner, p)
+	return newManagerForPlatform(installTarget{execPath: execPath, configPath: configPath}, runner, p)
 }
 
-func newManagerForPlatform(execPath string, runner CommandRunner, p platform) *Manager {
+func newManagerForPlatform(target installTarget, runner CommandRunner, p platform) *Manager {
 	return &Manager{
-		execPath:   execPath,
+		execPath:   target.execPath,
+		configPath: target.configPath,
 		searchPath: currentSearchPath(),
 		runner:     runner,
 		platform:   p,
@@ -114,7 +121,12 @@ func (m *Manager) Install() error {
 		}
 	}
 
-	content := m.platform.render(m.execPath, logDir, m.searchPath)
+	content := m.platform.render(renderSpec{
+		execPath:   m.execPath,
+		configPath: m.configPath,
+		logDir:     logDir,
+		searchPath: m.searchPath,
+	})
 	if err := os.WriteFile(unitPath, []byte(content), 0o644); err != nil {
 		return fmt.Errorf("write service file: %w", err)
 	}

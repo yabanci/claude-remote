@@ -19,10 +19,11 @@ type call struct {
 }
 
 type fakeRunner struct {
-	calls        []call
-	failOn       string
-	statusOutput []byte
-	statusErr    error
+	calls           []call
+	failOn          string
+	statusOutput    []byte
+	statusErr       error
+	launchctlOutput map[string][]byte
 }
 
 func (f *fakeRunner) Run(name string, args ...string) error {
@@ -35,6 +36,11 @@ func (f *fakeRunner) Run(name string, args ...string) error {
 
 func (f *fakeRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, call{name, args})
+	if len(args) > 0 {
+		if out, ok := f.launchctlOutput[args[0]]; ok {
+			return out, nil
+		}
+	}
 	if f.statusOutput != nil || f.statusErr != nil {
 		return f.statusOutput, f.statusErr
 	}
@@ -51,6 +57,15 @@ func (f *fakeRunner) ran(name string) bool {
 		}
 	}
 	return false
+}
+
+const (
+	testExecPath   = "/usr/local/bin/claude-remote"
+	testConfigPath = "/home/user/.config/claude-remote/config.yaml"
+)
+
+func newTestManager(runner CommandRunner, p platform) *Manager {
+	return newManagerForPlatform(installTarget{execPath: testExecPath, configPath: testConfigPath}, runner, p)
 }
 
 type platformCase struct {
@@ -86,7 +101,7 @@ func TestInstallWritesUnitFileAndEnablesIt(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			runner := &fakeRunner{}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			mgr := newTestManager(runner, tc.platform)
 
 			require.NoError(t, mgr.Install())
 
@@ -105,7 +120,7 @@ func TestUninstallRemovesUnitFile(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			runner := &fakeRunner{}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			mgr := newTestManager(runner, tc.platform)
 			require.NoError(t, mgr.Install())
 
 			require.NoError(t, mgr.Uninstall())
@@ -120,7 +135,7 @@ func TestUninstallIsFineWhenNothingInstalled(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+			mgr := newTestManager(&fakeRunner{}, tc.platform)
 
 			assert.NoError(t, mgr.Uninstall())
 		})
@@ -133,7 +148,7 @@ func TestUninstallPropagatesDisableFailure(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			runner := &fakeRunner{}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			mgr := newTestManager(runner, tc.platform)
 			require.NoError(t, mgr.Install())
 			runner.failOn = tc.tool
 
@@ -153,7 +168,7 @@ func TestStatusReportsNotInstalledWhenToolFails(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			runner := &fakeRunner{failOn: tc.tool}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			mgr := newTestManager(runner, tc.platform)
 
 			status, err := mgr.Status()
 
@@ -171,7 +186,7 @@ func TestLaunchdStatusReportsRunningWithPID(t *testing.T) {
 	"Label" = "dev.claude-remote.bridge";
 };
 `)}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+	mgr := newTestManager(runner, launchd{})
 
 	status, err := mgr.Status()
 
@@ -186,7 +201,7 @@ func TestLaunchdStatusReportsStoppedWhenLastExitStatusIsZero(t *testing.T) {
 	"Label" = "dev.claude-remote.bridge";
 };
 `)}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+	mgr := newTestManager(runner, launchd{})
 
 	status, err := mgr.Status()
 
@@ -201,7 +216,7 @@ func TestLaunchdStatusReportsFailedWhenLastExitStatusIsNonZero(t *testing.T) {
 	"Label" = "dev.claude-remote.bridge";
 };
 `)}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, launchd{})
+	mgr := newTestManager(runner, launchd{})
 
 	status, err := mgr.Status()
 
@@ -213,7 +228,7 @@ func TestLaunchdStatusReportsFailedWhenLastExitStatusIsNonZero(t *testing.T) {
 func TestSystemdStatusReportsActiveState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runner := &fakeRunner{statusOutput: []byte("active\n")}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+	mgr := newTestManager(runner, systemd{})
 
 	status, err := mgr.Status()
 
@@ -224,7 +239,7 @@ func TestSystemdStatusReportsActiveState(t *testing.T) {
 func TestSystemdStatusReportsFailedDistinctFromNotInstalled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runner := &fakeRunner{statusOutput: []byte("failed\n"), statusErr: fmt.Errorf("exit status 3")}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+	mgr := newTestManager(runner, systemd{})
 
 	status, err := mgr.Status()
 
@@ -236,7 +251,7 @@ func TestSystemdStatusReportsFailedDistinctFromNotInstalled(t *testing.T) {
 func TestSystemdStatusReportsStoppedWhenInactive(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	runner := &fakeRunner{statusOutput: []byte("inactive\n"), statusErr: fmt.Errorf("exit status 3")}
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+	mgr := newTestManager(runner, systemd{})
 
 	status, err := mgr.Status()
 
@@ -249,7 +264,7 @@ func TestSystemdStatusReportsTransitionalStatesDistinctFromNotInstalled(t *testi
 		t.Run(state, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			runner := &fakeRunner{statusOutput: []byte(state + "\n"), statusErr: fmt.Errorf("exit status 3")}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, systemd{})
+			mgr := newTestManager(runner, systemd{})
 
 			status, err := mgr.Status()
 
@@ -265,7 +280,7 @@ func TestInstallPropagatesEnableFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			runner := &fakeRunner{failOn: tc.tool}
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", runner, tc.platform)
+			mgr := newTestManager(runner, tc.platform)
 
 			err := mgr.Install()
 
@@ -275,12 +290,44 @@ func TestInstallPropagatesEnableFailure(t *testing.T) {
 	}
 }
 
+func TestInstallDetectsLaunchctlLoadFailureDespiteZeroExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{launchctlOutput: map[string][]byte{
+		"load": []byte("Load failed: 5: Input/output error\n"),
+	}}
+	mgr := newTestManager(runner, launchd{})
+
+	err := mgr.Install()
+
+	require.Error(t, err, "launchctl load exits 0 even when it fails, the output text must be inspected")
+	assert.Contains(t, err.Error(), "Load failed")
+}
+
+func TestUninstallDetectsLaunchctlUnloadFailureDespiteZeroExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	runner := &fakeRunner{}
+	mgr := newTestManager(runner, launchd{})
+	require.NoError(t, mgr.Install())
+	runner.launchctlOutput = map[string][]byte{
+		"unload": []byte("Unload failed: 3: No such process\n"),
+	}
+
+	err := mgr.Uninstall()
+
+	require.Error(t, err, "launchctl unload exits 0 even when it fails, the output text must be inspected")
+	assert.Contains(t, err.Error(), "Unload failed")
+
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", "dev.claude-remote.bridge.plist")
+	assert.FileExists(t, unitPath, "a service that failed to unload should not have its unit file removed")
+}
+
 func TestInstallIsIdempotent(t *testing.T) {
 	for _, tc := range platformCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+			mgr := newTestManager(&fakeRunner{}, tc.platform)
 
 			require.NoError(t, mgr.Install())
 			require.NoError(t, mgr.Install())
@@ -320,7 +367,7 @@ func TestPlatformForKnownOSes(t *testing.T) {
 }
 
 func TestNewManagerUsesRealExecRunner(t *testing.T) {
-	mgr := NewManager("/usr/local/bin/claude-remote")
+	mgr := NewManager(testExecPath, testConfigPath)
 	assert.IsType(t, execRunner{}, mgr.runner)
 }
 
@@ -359,7 +406,7 @@ func TestInstalledServiceCarriesTheSearchPath(t *testing.T) {
 			home := t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("PATH", "/opt/homebrew/bin:/usr/bin:/bin")
-			mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, tc.platform)
+			mgr := newTestManager(&fakeRunner{}, tc.platform)
 
 			require.NoError(t, mgr.Install())
 
@@ -375,7 +422,7 @@ func TestInstalledServiceCarriesTheSearchPath(t *testing.T) {
 func TestSearchPathFallsBackWhenEnvIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", "")
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, launchd{})
+	mgr := newTestManager(&fakeRunner{}, launchd{})
 
 	require.NoError(t, mgr.Install())
 
@@ -385,7 +432,7 @@ func TestSearchPathFallsBackWhenEnvIsEmpty(t *testing.T) {
 func TestLaunchdLogsGoToTheLogsDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	mgr := newManagerForPlatform("/usr/local/bin/claude-remote", &fakeRunner{}, launchd{})
+	mgr := newTestManager(&fakeRunner{}, launchd{})
 
 	require.NoError(t, mgr.Install())
 
@@ -399,7 +446,10 @@ func TestLaunchdLogsGoToTheLogsDirectory(t *testing.T) {
 }
 
 func TestLaunchdRenderEscapesXMLSpecialCharacters(t *testing.T) {
-	out := launchd{}.render("/opt/a & b/claude-remote", "/var/log/a&b", "/usr/bin:/bin")
+	out := launchd{}.render(renderSpec{
+		execPath: "/opt/a & b/claude-remote", configPath: testConfigPath,
+		logDir: "/var/log/a&b", searchPath: "/usr/bin:/bin",
+	})
 
 	assert.Contains(t, out, "/opt/a &amp; b/claude-remote")
 	assert.NotContains(t, out, "/opt/a & b/claude-remote",
@@ -411,23 +461,64 @@ func TestLaunchdRenderEscapesXMLSpecialCharacters(t *testing.T) {
 	require.NoError(t, xml.Unmarshal([]byte(out), &doc), "rendered plist must be well-formed XML")
 }
 
+func TestLaunchdRenderEscapesConfigPath(t *testing.T) {
+	out := launchd{}.render(renderSpec{
+		execPath: testExecPath, configPath: "/home/user/a & b/config.yaml", searchPath: "/usr/bin:/bin",
+	})
+
+	assert.Contains(t, out, "<string>-config</string>")
+	assert.Contains(t, out, "/home/user/a &amp; b/config.yaml")
+}
+
 func TestSystemdRenderQuotesPathsWithSpaces(t *testing.T) {
-	out := systemd{}.render("/opt/a path/claude-remote", "", "/usr/bin:/bin")
+	out := systemd{}.render(renderSpec{
+		execPath: "/opt/a path/claude-remote", configPath: testConfigPath, searchPath: "/usr/bin:/bin",
+	})
 
 	assert.Contains(t, out, `ExecStart="/opt/a path/claude-remote" run`,
 		"an unquoted space in execPath would split systemd's ExecStart into two arguments")
 }
 
 func TestSystemdRenderEscapesEmbeddedQuotes(t *testing.T) {
-	out := systemd{}.render(`/opt/weird"path/claude-remote`, "", "/usr/bin:/bin")
+	out := systemd{}.render(renderSpec{
+		execPath: `/opt/weird"path/claude-remote`, configPath: testConfigPath, searchPath: "/usr/bin:/bin",
+	})
 
 	assert.Contains(t, out, `ExecStart="/opt/weird\"path/claude-remote" run`)
 }
 
 func TestSystemdRenderEscapesPercentSpecifiers(t *testing.T) {
-	out := systemd{}.render(`/opt/%h/claude-remote`, "", `/usr/bin:/opt/%n/bin`)
+	out := systemd{}.render(renderSpec{
+		execPath: `/opt/%h/claude-remote`, configPath: testConfigPath, searchPath: `/usr/bin:/opt/%n/bin`,
+	})
 
 	assert.Contains(t, out, `ExecStart="/opt/%%h/claude-remote" run`,
 		"an unescaped %h is expanded by systemd into the user's home directory at unit-start time")
 	assert.Contains(t, out, `Environment="PATH=/usr/bin:/opt/%%n/bin"`)
+}
+
+func TestSystemdRenderQuotesConfigPathWithSpaces(t *testing.T) {
+	out := systemd{}.render(renderSpec{
+		execPath: testExecPath, configPath: "/home/user/a path/config.yaml", searchPath: "/usr/bin:/bin",
+	})
+
+	assert.Contains(t, out, `-config "/home/user/a path/config.yaml"`)
+}
+
+func TestInstalledServiceCarriesTheConfigPath(t *testing.T) {
+	for _, tc := range platformCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			mgr := newTestManager(&fakeRunner{}, tc.platform)
+
+			require.NoError(t, mgr.Install())
+
+			unitPath := filepath.Join(append([]string{home}, tc.unitRelPath...)...)
+			data, err := os.ReadFile(unitPath)
+			require.NoError(t, err)
+			assert.Contains(t, string(data), testConfigPath,
+				"the installed service must run against the config that was validated before install")
+		})
+	}
 }

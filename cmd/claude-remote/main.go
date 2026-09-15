@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -137,8 +138,16 @@ func cmdService(args []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
 	}
+	configPath, err := resolveConfigPath(args)
+	if err != nil {
+		return err
+	}
+	configPath, err = filepath.Abs(configPath)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
 
-	return runService(args, service.NewManager(execPath), stdout)
+	return runService(args, service.NewManager(execPath, configPath), stdout)
 }
 
 func runService(args []string, mgr serviceManager, stdout io.Writer) error {
@@ -181,6 +190,11 @@ func verifyConfigBeforeInstall(args []string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("refusing to install a service that cannot start: config %s is invalid: %w", configPath, err)
 	}
+	if strings.TrimSpace(cfg.BotToken) == "" {
+		return fmt.Errorf("refusing to install: bot_token is empty in %s and only set via %s — "+
+			"a launchd/systemd service does not inherit this shell's environment, so it would fail to "+
+			"authenticate; put the token in the config file instead", configPath, config.EnvBotToken)
+	}
 	return nil
 }
 
@@ -195,6 +209,18 @@ func cmdInit(args []string) error {
 		fmt.Print(label)
 		reader.Scan()
 		return strings.TrimSpace(reader.Text())
+	}
+
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("Конфиг уже существует: %s\n", configPath)
+		fmt.Println("Продолжение перезапишет токен, allowlist, сессии и настройки settle.")
+		answer := prompt("Перезаписать? (y/N): ")
+		if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+			fmt.Println("отменено, существующий конфиг не тронут")
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check existing config: %w", err)
 	}
 
 	fmt.Println("Создай отдельного бота через @BotFather в Telegram (/newbot) и вставь его токен ниже.")
