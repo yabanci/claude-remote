@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -208,6 +209,18 @@ func cmdInit(args []string) error {
 		fmt.Print(label)
 		reader.Scan()
 		return strings.TrimSpace(reader.Text())
+	}
+
+	if _, err := os.Stat(configPath); err == nil {
+		fmt.Printf("Конфиг уже существует: %s\n", configPath)
+		fmt.Println("Продолжение перезапишет токен, allowlist, сессии и настройки settle.")
+		answer := prompt("Перезаписать? (y/N): ")
+		if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+			fmt.Println("отменено, существующий конфиг не тронут")
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check existing config: %w", err)
 	}
 
 	fmt.Println("Создай отдельного бота через @BotFather в Telegram (/newbot) и вставь его токен ниже.")
