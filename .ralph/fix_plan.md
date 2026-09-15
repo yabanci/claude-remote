@@ -373,11 +373,32 @@ fix, before it's touched.
   "stable" (nothing changing yet) but isn't the real settle point. Bumping `ColdStartDelayMS`
   from 1000 to 2500 did NOT fix it, which weakens but doesn't rule out this hypothesis (the
   extra delay is before the exec even runs if Enter itself is what's slow to register, not the
-  bash startup after it). Next step if picked back up: needs actual tmux access to observe the
-  cold-start sequence capture-by-capture (this session's sandbox has none — see gotcha #32) —
-  add temporary diagnostic logging to `ensureRunning`/`WaitForSettle` dumping each poll's raw
+  bash startup after it). **15.09.2026 update:** a separate deep-investigation pass suggests a
+  different, more likely root cause — a cold-start double-echo from `tmux.Start` pasting the
+  run command before the shell is actually ready to read it, not a `WaitForSettle` timing race.
+  Not verified either — still needs the same frame-by-frame diagnostic-logging approach below.
+  tmux is back in PATH on this machine as of 15.09.2026 (`brew install tmux`, see gotcha #32's
+  update) — the "no local tmux" blocker no longer applies. Next step if picked back up: add
+  temporary diagnostic logging to `ensureRunning`/`WaitForSettle` dumping each poll's raw
   capture, run locally with real tmux, read what actually happens frame-by-frame instead of
   inferring from CI's final-state-only failure output.
+
+- [x] **Deep-investigation audit (15.09.2026) — 4 of 5 Blocking findings fixed, 1 investigated
+  and rejected.** Independent full-project review (beyond the already-hardened dispatch code)
+  found: (1) `service install` dropped `-config <path>` and an env-only bot token when
+  generating the launchd/systemd unit — fixed, `Manager`/`platform.render` now carry
+  `configPath`, `verifyConfigBeforeInstall` refuses an env-only token. (2) `init` silently
+  overwrote an existing config with no confirmation — fixed, now prompts y/N and leaves the
+  file untouched on decline. (3) `tmux.SendKeys` used the shared global paste-buffer stack,
+  letting concurrent turns to different sessions swap text — fixed with a unique named buffer
+  per call; reproduced directly with `TestConcurrentSendKeysToDifferentSessionsDoNotSwapText`
+  before fixing. (4) claimed `history-limit` bug (set after `new-session`, so the real cap is
+  tmux's 2000 default not 5000) — investigated empirically with real tmux 3.7c, does NOT
+  reproduce: the option applies immediately and 5000 lines are genuinely retained. Not fixed —
+  see gotcha #39. (5) `launchctl load`/`unload` can exit 0 while printing "Load failed:" to
+  stderr — fixed, `enable`/`disable` now inspect `CombinedOutput` text, not just the exit code.
+  All four real fixes are mutation-verified, one commit each, on `chore/post-v0.10-audit`.
+  Full writeup: gotcha #39.
 
 - [x] **Raise `cmd/claude-remote` coverage above 70%.** Was 51%. `main` read `os.Args` and
   called `os.Exit` directly, so `printUsage`, the `version`/`help` branches, and the
