@@ -19,10 +19,11 @@ type call struct {
 }
 
 type fakeRunner struct {
-	calls        []call
-	failOn       string
-	statusOutput []byte
-	statusErr    error
+	calls           []call
+	failOn          string
+	statusOutput    []byte
+	statusErr       error
+	launchctlOutput map[string][]byte
 }
 
 func (f *fakeRunner) Run(name string, args ...string) error {
@@ -35,6 +36,11 @@ func (f *fakeRunner) Run(name string, args ...string) error {
 
 func (f *fakeRunner) CombinedOutput(name string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, call{name, args})
+	if len(args) > 0 {
+		if out, ok := f.launchctlOutput[args[0]]; ok {
+			return out, nil
+		}
+	}
 	if f.statusOutput != nil || f.statusErr != nil {
 		return f.statusOutput, f.statusErr
 	}
@@ -282,6 +288,38 @@ func TestInstallPropagatesEnableFailure(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.tool)
 		})
 	}
+}
+
+func TestInstallDetectsLaunchctlLoadFailureDespiteZeroExit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	runner := &fakeRunner{launchctlOutput: map[string][]byte{
+		"load": []byte("Load failed: 5: Input/output error\n"),
+	}}
+	mgr := newTestManager(runner, launchd{})
+
+	err := mgr.Install()
+
+	require.Error(t, err, "launchctl load exits 0 even when it fails, the output text must be inspected")
+	assert.Contains(t, err.Error(), "Load failed")
+}
+
+func TestUninstallDetectsLaunchctlUnloadFailureDespiteZeroExit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	runner := &fakeRunner{}
+	mgr := newTestManager(runner, launchd{})
+	require.NoError(t, mgr.Install())
+	runner.launchctlOutput = map[string][]byte{
+		"unload": []byte("Unload failed: 3: No such process\n"),
+	}
+
+	err := mgr.Uninstall()
+
+	require.Error(t, err, "launchctl unload exits 0 even when it fails, the output text must be inspected")
+	assert.Contains(t, err.Error(), "Unload failed")
+
+	unitPath := filepath.Join(home, "Library", "LaunchAgents", "dev.claude-remote.bridge.plist")
+	assert.FileExists(t, unitPath, "a service that failed to unload should not have its unit file removed")
 }
 
 func TestInstallIsIdempotent(t *testing.T) {

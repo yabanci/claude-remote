@@ -75,16 +75,34 @@ func xmlEscape(s string) string {
 	return buf.String()
 }
 
+func launchctlFailureReason(out []byte) (string, bool) {
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "Load failed:") || strings.Contains(line, "Unload failed:") {
+			return line, true
+		}
+	}
+	return "", false
+}
+
 func (launchd) enable(runner CommandRunner, unitPath string) error {
-	if err := runner.Run("launchctl", "load", "-w", unitPath); err != nil {
-		return fmt.Errorf("launchctl load: %w", err)
+	out, err := runner.CombinedOutput("launchctl", "load", "-w", unitPath)
+	if err != nil {
+		return fmt.Errorf("launchctl load: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if reason, failed := launchctlFailureReason(out); failed {
+		return fmt.Errorf("launchctl load: %s", reason)
 	}
 	return nil
 }
 
 func (launchd) disable(runner CommandRunner, unitPath string) error {
-	if err := runner.Run("launchctl", "unload", unitPath); err != nil {
-		return fmt.Errorf("launchctl unload: %w", err)
+	out, err := runner.CombinedOutput("launchctl", "unload", unitPath)
+	if err != nil {
+		return fmt.Errorf("launchctl unload: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if reason, failed := launchctlFailureReason(out); failed {
+		return fmt.Errorf("launchctl unload: %s", reason)
 	}
 	return nil
 }
