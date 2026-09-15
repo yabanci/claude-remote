@@ -159,6 +159,20 @@ func TestServiceInstallRefusesWithInvalidConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid")
 }
 
+func TestServiceInstallRefusesWhenTokenOnlyInEnv(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Default()
+	cfg.BotToken = ""
+	require.NoError(t, config.Save(configPath, cfg))
+	t.Setenv(config.EnvBotToken, "123:abc")
+
+	err := verifyConfigBeforeInstall([]string{"-config", configPath})
+
+	require.Error(t, err,
+		"a launchd/systemd service does not inherit this shell's environment, so an env-only token would silently fail at runtime")
+	assert.Contains(t, err.Error(), config.EnvBotToken)
+}
+
 func TestRunWithNoArgsPrintsUsageAndFails(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 
